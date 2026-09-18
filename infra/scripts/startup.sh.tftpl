@@ -1,0 +1,197 @@
+#!/bin/bash
+# =============================================================================
+# ${project} — ${role}
+# Rendered by Terraform. Runs once at first boot as root.
+#
+# SECURITY: this script body is stored in the Verda API in plaintext and is
+# visible in Terraform state. It must contain NO secrets. Secrets are read from
+# ${weights_mount}/.env, which an operator writes over SSH during phase p0 and
+# which never leaves the encrypted volume.
+# =============================================================================
+set -euo pipefail
+
+exec > >(tee -a /var/log/${project}-startup.log) 2>&1
+echo "=== ${project} ${role} startup $(date -Is) ==="
+
+ROLE="${role}"
+MOUNT="${weights_mount}"
+VLLM_IMAGE="${vllm_image}"
+SERVED_NAME="${served_model_name}"
+MODEL="${model}"
+MAX_MODEL_LEN="${max_model_len}"
+MAX_NUM_SEQS="${max_num_seqs}"
+MAX_BATCHED_TOKENS="${max_batched_tokens}"
+GPU_MEM_UTIL="${gpu_memory_util}"
+TP="${tensor_parallel}"
+NODE="${role}"
+
+# -----------------------------------------------------------------------------
+# 1. Wait for the shared NVMe volume.
+#
+# verda_volume_attachment is applied AFTER the instance exists, so at first boot
+# the device may not be present yet. Poll rather than fail.
+# -----------------------------------------------------------------------------
+mkdir -p "$MOUNT"
+
+find_weights_device() {
+  # Prefer an already-formatted volume carrying our label.
+  local by_label="/dev/disk/by-label/${project}-weights"
+  [[ -e "$by_label" ]] && { readlink -f "$by_label"; return 0; }
+
+  # Otherwise: the largest unmounted block device that is not the OS disk.
+  lsblk -bdnp -o NAME,SIZE,TYPE,MOUNTPOINT \
+    | awk '$3=="disk" && $4=="" {print $2, $1}' \
+    | sort -rn | head -n1 | awk '{print $2}'
+}
+
+DEV=""
+for i in $(seq 1 60); do          # up to 10 minutes
+  DEV="$(find_weights_device || true)"
+  if [[ -n "$DEV" && -b "$DEV" ]]; then
+    echo "found candidate weights device: $DEV (attempt $i)"
+    break
+  fi
+  echo "waiting for weights volume attachment... ($i/60)"
+  sleep 10
+done
+
+if [[ -z "$DEV" || ! -b "$DEV" ]]; then
+  echo "FATAL: weights volume never appeared. Attach it manually and re-run:"
+  echo "  systemctl start ${project}-vllm.service"
+  exit 1
+fi
+
+# Format ONLY if there is no filesystem. Never reformat a volume that already
+# holds ~300GB of checkpoints.
+if ! blkid "$DEV" >/dev/null 2>&1; then
+  echo "no filesystem on $DEV — creating ext4 (first use)"
+  mkfs.ext4 -L "${project}-weights" "$DEV"
+else
+  echo "existing filesystem on $DEV — mounting as-is"
+fi
+
+mount "$DEV" "$MOUNT" || { echo "FATAL: mount failed"; exit 1; }
+grep -q "$MOUNT" /etc/fstab || echo "LABEL=${project}-weights $MOUNT ext4 defaults,nofail 0 2" >> /etc/fstab
+mkdir -p "$MOUNT/hf-cache" "$MOUNT/logs"
+df -h "$MOUNT"
+
+# -----------------------------------------------------------------------------
+# 2. Secrets, from the volume — never from this script.
+# -----------------------------------------------------------------------------
+if [[ -f "$MOUNT/.env" ]]; then
+  chmod 600 "$MOUNT/.env"
+  # shellcheck disable=SC1091
+  set -a; source "$MOUNT/.env"; set +a
+  echo "loaded secrets from $MOUNT/.env"
+else
+  echo "WARNING: $MOUNT/.env not found."
+  echo "Create it over SSH before serving:"
+  echo "  printf 'HF_TOKEN=hf_xxx\nVLLM_API_KEY=xxx\n' | sudo tee $MOUNT/.env"
+  echo "  sudo chmod 600 $MOUNT/.env"
+fi
+
+# -----------------------------------------------------------------------------
+# 3. Sanity-check the GPU.
+# -----------------------------------------------------------------------------
+nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv || {
+  echo "FATAL: nvidia-smi failed — wrong image or driver not loaded"; exit 1; }
+
+GPU_COUNT=$(nvidia-smi --list-gpus | wc -l)
+echo "GPUs present: $GPU_COUNT, tensor-parallel-size: $TP"
+if [[ "$GPU_COUNT" -ne "$TP" ]]; then
+  echo "FATAL: instance has $GPU_COUNT GPU(s) but TP is $TP."
+  echo "node_sku and node_tp disagree. Fix them together and re-apply."
+  exit 1
+fi
+
+# -----------------------------------------------------------------------------
+# 4. Pre-pull the vLLM image so a restart is fast.
+# -----------------------------------------------------------------------------
+docker pull "$VLLM_IMAGE"
+
+%{ if !serve ~}
+# -----------------------------------------------------------------------------
+# BAKE PHASE (p0): download weights, do not serve.
+# -----------------------------------------------------------------------------
+echo "=== bake: pulling checkpoints to $MOUNT/hf-cache ==="
+docker run --rm \
+  -e HF_TOKEN="$${HF_TOKEN:-}" \
+  -e HF_HOME=/weights/hf-cache \
+  -v "$MOUNT:/weights" \
+  --entrypoint /bin/bash "$VLLM_IMAGE" -c '
+    set -e
+    pip install -q "huggingface_hub[cli]"
+    for repo in "'"$MODEL"'" ; do
+      echo "--- downloading $repo"
+      hf download "$repo" --cache-dir /weights/hf-cache
+    done
+  '
+echo "=== bake complete. Verify with: du -sh $MOUNT/hf-cache/* ==="
+exit 0
+%{ else ~}
+
+# -----------------------------------------------------------------------------
+# 5. Serve. Flags follow the architecture design doc.
+# -----------------------------------------------------------------------------
+cat > /etc/systemd/system/${project}-vllm.service <<UNIT
+[Unit]
+Description=${project} vLLM (${role})
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+Type=exec
+Restart=always
+RestartSec=20
+TimeoutStartSec=1800
+EnvironmentFile=-$MOUNT/.env
+ExecStartPre=-/usr/bin/docker rm -f ${project}-vllm
+ExecStart=/usr/bin/docker run --rm --name ${project}-vllm \\
+  --gpus all --ipc=host --shm-size=16g --ulimit memlock=-1 --ulimit stack=67108864 \\
+  -e NCCL_P2P_DISABLE=0 -e NCCL_SHM_DISABLE=0 \\
+  -p 8000:8000 \\
+  -v $MOUNT:/weights \\
+  -e HF_HOME=/weights/hf-cache \\
+  -e HF_TOKEN \\
+  -e VLLM_API_KEY \\
+  $VLLM_IMAGE \\
+    --model $MODEL \\
+    --served-model-name $SERVED_NAME \\
+    --tensor-parallel-size $TP \\
+    --max-model-len $MAX_MODEL_LEN \\
+    --max-num-seqs $MAX_NUM_SEQS \\
+    --max-num-batched-tokens $MAX_BATCHED_TOKENS \\
+    --enable-chunked-prefill \\
+    --enable-prefix-caching \\
+    --kv-cache-dtype fp8 \\
+    --gpu-memory-utilization $GPU_MEM_UTIL \\
+    --swap-space 8 \\
+    --reasoning-parser qwen3 \\
+    --enable-auto-tool-choice \\
+    --tool-call-parser hermes \\
+    --max-cudagraph-capture-size 256 \\
+    --host 0.0.0.0 --port 8000
+ExecStop=/usr/bin/docker stop -t 60 ${project}-vllm
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+systemctl daemon-reload
+systemctl enable --now ${project}-vllm.service
+
+# -----------------------------------------------------------------------------
+# 6. Readiness probe. First start loads ~125GB of weights; be patient.
+# -----------------------------------------------------------------------------
+for i in $(seq 1 90); do
+  if curl -fsS http://127.0.0.1:8000/health >/dev/null 2>&1; then
+    echo "=== vLLM healthy after $((i*20))s ==="
+    curl -s http://127.0.0.1:8000/v1/models || true
+    exit 0
+  fi
+  sleep 20
+done
+
+echo "WARNING: vLLM not healthy after 30 minutes. Inspect with:"
+echo "  journalctl -u ${project}-vllm.service -n 200 --no-pager"
+%{ endif ~}

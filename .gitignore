@@ -1,0 +1,30 @@
+# Terraform
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+infra/terraform.tfvars
+
+# Secrets — never commit. See .env.example.
+.env
+*.env
+!.env.example
+*.pem
+*.key
+id_ed25519*
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Operational output
+preflight-history.log
+audit/
+evals/results/

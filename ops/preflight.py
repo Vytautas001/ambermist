@@ -1,0 +1,135 @@
+#!/usr/bin/env python3
+"""
+Capacity preflight for the Verda exercise infrastructure.
+
+The deploy console showed B200, B300, GB300, L40S, A100-40GB and RTX A6000 as
+"No availability". Verda checks capacity at deploy time and returns HTTP 503
+against an exhausted pool, so the only question worth asking before an apply is:
+can I actually get the box?
+
+  preflight.py                 check the ladder, print a verdict
+  preflight.py --json          machine-readable (CI, or a Terraform external
+                               data source)
+  preflight.py --watch 900     poll every 15 min, log history, shout on change
+
+/v1/instance-availability is PUBLIC - no credentials required.
+
+Exit codes:  0 design target available | 1 only a fallback | 3 nothing available
+             4 API unreachable
+"""
+import argparse, datetime, json, os, sys, time, urllib.request, urllib.error
+
+API = os.environ.get("VERDA_API", "https://api.verda.com/v1")
+
+# sku, tensor-parallel size, VRAM GB, EUR/h, note
+LADDER = [
+    ("2RTXPRO6000.60V",  2, 192, 3.170, "design target, TP=2 over PCIe"),
+    ("2H200.141S.88V",   2, 282, 7.456, "faster, NVLink, 2.4x the price"),
+    ("4RTXPRO6000.120V", 4, 384, 6.340, "more VRAM, TP=4 PCIe scaling is worse"),
+    ("1H200.141S.44V",   1, 141, 3.728, "TP=1 - Int4 or gpt-oss ONLY, FP8 will not fit"),
+]
+
+# Anything here is known-unavailable and must never be planned on.
+BLOCKED = {"1B200.30V", "1B300.30V", "1GB300.32V", "1L40S.20V", "1A100.40S.22V"}
+
+
+def fetch(timeout=20):
+    req = urllib.request.Request(
+        f"{API}/instance-availability",
+        headers={"Accept": "application/json", "User-Agent": "redcell-preflight/1.0"},
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.load(r)
+
+
+def parse(raw):
+    """Normalise to {location_code: set(instance_types)}."""
+    by_loc = {}
+    if isinstance(raw, list):
+        for e in raw:
+            if isinstance(e, str):                      # flat list of SKUs
+                by_loc.setdefault("*", set()).add(e)
+            elif isinstance(e, dict):
+                loc = e.get("location_code") or e.get("location") or "*"
+                types = e.get("availabilities") or e.get("instance_types") or []
+                by_loc.setdefault(loc, set()).update(types)
+    elif isinstance(raw, dict):
+        for loc, types in raw.items():
+            by_loc.setdefault(loc, set()).update(types or [])
+    return by_loc
+
+
+def evaluate(by_loc):
+    rungs = []
+    for sku, tp, vram, eur, note in LADDER:
+        locs = sorted(l for l, s in by_loc.items() if sku in s)
+        rungs.append({"sku": sku, "tp": tp, "vram_gb": vram, "eur_per_hour": eur,
+                      "available": bool(locs), "locations": locs, "note": note})
+    best = next((r for r in rungs if r["available"]), None)
+    return rungs, best
+
+
+def report(rungs, best, by_loc, as_json):
+    ts = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+    if as_json:
+        print(json.dumps({"checked_at": ts, "best": best, "ladder": rungs,
+                          "locations_seen": sorted(by_loc)}, indent=2))
+    else:
+        print(f"=== capacity preflight {ts} ===")
+        for r in rungs:
+            mark = "AVAILABLE" if r["available"] else "OUT OF STOCK"
+            where = ",".join(r["locations"]) or "-"
+            sku, vram, eur = r["sku"], r["vram_gb"], r["eur_per_hour"]
+            print(f"  {mark:12} {sku:20} {vram:4}GB  EUR {eur:6.3f}/h  [{where}]  {r['note']}")
+        blocked_seen = sorted({s for types in by_loc.values() for s in types} & BLOCKED)
+        if blocked_seen:
+            print(f"\n  NOTE: {', '.join(blocked_seen)} is back in stock. It was")
+            print("  unavailable when this was designed - re-check before relying on it.")
+        print()
+        if best is None:
+            print("  *** NO RUNG OF THE LADDER IS AVAILABLE ***")
+            print("  Do not sit and retry. Open docs/CAPACITY-RUNBOOK.md.")
+        else:
+            print(f'  -> apply with: node_sku="{best["sku"]}" node_tp={best["tp"]}')
+            if best is not rungs[0]:
+                print("  -> THIS IS A FALLBACK RUNG, not the design target.")
+                print("     See docs/CAPACITY-RUNBOOK.md for the consequences.")
+    return 0 if best is rungs[0] else (1 if best else 3)
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--json", action="store_true")
+    ap.add_argument("--watch", type=int, metavar="SECONDS")
+    ap.add_argument("--history", default="preflight-history.log")
+    a = ap.parse_args()
+
+    def once():
+        try:
+            by_loc = parse(fetch())
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as e:
+            print(f"ERROR: {API}/instance-availability unreachable: {e}", file=sys.stderr)
+            return 4, None, None
+        rungs, best = evaluate(by_loc)
+        return report(rungs, best, by_loc, a.json), rungs, best
+
+    if a.watch is None:
+        sys.exit(once()[0])
+
+    print(f"watching every {a.watch}s; history -> {a.history} (Ctrl-C to stop)", file=sys.stderr)
+    last = None
+    while True:
+        rc, rungs, best = once()
+        state = tuple(r["available"] for r in rungs) if rungs else None
+        with open(a.history, "a") as fh:
+            fh.write(f"{datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds')}"
+                     f" rc={rc} best={(best or {}).get('sku', 'NONE')} state={state}\n")
+        if state != last:
+            print(f"\n### CHANGE DETECTED (was {last}, now {state})\n", file=sys.stderr)
+            last = state
+        time.sleep(a.watch)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,34 @@
+# LiteLLM router for the exercise.
+#
+# Two jobs: (1) load-balance across the two active-active vLLM nodes so losing
+# one degrades rather than stops; (2) enforce PER-TEAM fairness — vLLM's own
+# scheduler is FCFS and will let one runaway agent loop starve the others.
+#
+# Start:  litellm --config litellm.config.yaml
+# Env:    NODE_A_URL, NODE_B_URL, LITELLM_MASTER_KEY, LITELLM_DB (optional)
+
+model_list:
+  - model_name: redcell-adversary
+    litellm_params:
+      model: hosted_vllm/redcell-adversary
+      api_base: os.environ/NODE_A_URL      # e.g. http://10.20.255.1:8000/v1
+      api_key: os.environ/VLLM_API_KEY
+  - model_name: redcell-adversary          # same public name = transparent failover + LB
+    litellm_params:
+      model: hosted_vllm/redcell-adversary
+      api_base: os.environ/NODE_B_URL
+      api_key: os.environ/VLLM_API_KEY
+
+router_settings:
+  routing_strategy: least-busy             # spread 8 teams across both nodes
+  num_retries: 2
+  timeout: 300                             # long agentic turns
+  allowed_fails: 3
+  cooldown_time: 60
+  health_check_interval: 15                # fail a dead node out within ~15s
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  # THE tenant-fairness guarantee. Per virtual key, not global.
+  max_parallel_requests: 3
+  database_url: os.environ/LITELLM_DB      # per-team spend, latency, full audit

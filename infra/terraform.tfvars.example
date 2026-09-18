@@ -1,0 +1,21 @@
+# cp terraform.tfvars.example terraform.tfvars and edit.
+# terraform.tfvars is gitignored — it identifies your operators.
+
+project  = "redcell"
+location = "FIN-01"
+
+ssh_public_keys = {
+  # name => OpenSSH public key
+  "vytautas"  = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... vyt@exercise"
+  "whitecell" = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... wc@exercise"
+}
+
+# Confirm against your own account before the first apply:
+#   curl -H "Authorization: Bearer $TOKEN" https://api.verda.com/v1/images
+image = "ubuntu-24.04-cuda-12.8-open-docker"
+
+weights_volume_size_gb = 400
+os_volume_size_gb      = 100
+
+budget_eur   = 500
+eur_usd_rate = 1.1622

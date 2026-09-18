@@ -1,0 +1,42 @@
+name: capacity-watch
+# Scheduled capacity preflight. Opens an issue when the target SKU drops out of
+# stock, so you learn about a capacity problem from your inbox, not on exercise
+# morning. Disable or retune the cron once the exercise is over.
+on:
+  schedule:
+    - cron: "0 */3 * * *"     # every 3 hours
+  workflow_dispatch: {}
+
+permissions:
+  issues: write
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - id: check
+        run: |
+          set +e
+          python ops/preflight.py --json > preflight.json
+          echo "rc=$?" >> "$GITHUB_OUTPUT"
+          cat preflight.json
+      - if: steps.check.outputs.rc != '0'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const data = JSON.parse(fs.readFileSync('preflight.json','utf8'));
+            const best = data.best ? data.best.sku : 'NOTHING AVAILABLE';
+            const title = `Capacity alert: target SKU not available (best now: ${best})`;
+            const body = "Automated preflight did not return the design-target SKU.\n\n"
+              + "```json\n" + JSON.stringify(data, null, 2) + "\n```\n\n"
+              + "See docs/CAPACITY-RUNBOOK.md.";
+            const {data: issues} = await github.rest.issues.listForRepo(
+              {owner: context.repo.owner, repo: context.repo.repo, state: 'open', labels: 'capacity'});
+            if (issues.length === 0) {
+              await github.rest.issues.create({owner: context.repo.owner, repo: context.repo.repo,
+                title, body, labels: ['capacity']});
+            }
