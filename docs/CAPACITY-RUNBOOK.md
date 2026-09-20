@@ -15,7 +15,7 @@ you except occupying it.
 | 2 | **Acquire once, hold through** | Rehearsal and live are one 46-hour phase on the same instances. There is no re-acquisition on exercise morning, which is the moment you cannot afford a 503. |
 | 3 | **Two independent nodes, both serving** | Losing one degrades throughput; it does not stop the exercise. They are separate instances, so a single host fault takes one. |
 | 4 | **Build on the most-available SKU** | RTX PRO 6000 showed 1x/2x/4x/8x in stock and is the cheapest that fits the checkpoint. Abundance beats peak FLOPS when the alternative is nothing. |
-| 5 | **Preflight before every apply** | `make preflight` hits the public `/v1/instance-availability` and walks the ladder. `make watch` polls every 15 min and logs history, so you learn the daily availability rhythm *before* it matters. |
+| 5 | **Preflight before every apply** | `make preflight` hits `/v1/instance-availability` (requires `VERDA_CLIENT_ID`/`VERDA_CLIENT_SECRET` — Verda now rejects it unauthenticated, unlike earlier docs) and walks the ladder. `make watch` polls every 15 min and logs history, so you learn the daily availability rhythm *before* it matters. |
 
 **Do this today, it costs nothing:**
 

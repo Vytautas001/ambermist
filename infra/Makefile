@@ -44,10 +44,10 @@ off: ## destroy all GPUs, keep the weights volume
 plan-%: check-creds
 	$(TF) plan -var-file=$$(ls phases/$*[-.]*.tfvars)
 
-preflight: ## is the target SKU actually in stock right now?
+preflight: check-creds ## is the target SKU actually in stock right now?
 	@python3 ../ops/preflight.py
 
-watch: ## poll availability every 15 min and log history (run this from now until the exercise)
+watch: check-creds ## poll availability every 15 min and log history (run this from now until the exercise)
 	@python3 ../ops/preflight.py --watch 900
 
 apply: check-creds

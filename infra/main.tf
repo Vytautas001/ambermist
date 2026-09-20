@@ -58,10 +58,12 @@ resource "verda_startup_script" "role" {
     model             = each.value.model
     max_model_len     = each.value.ctx
     serve             = each.value.serve
-    # Batch sizing differs by card: the B200 has ~35 GiB of KV pool, the
-    # RTX PRO 6000 running Int4 has only ~13.9 GiB.
-    max_num_seqs       = each.value.sku == local.sku.b200 ? 16 : 10
-    max_batched_tokens = each.value.sku == local.sku.b200 ? 8192 : 4096
-    gpu_memory_util    = each.value.sku == local.sku.b200 ? "0.92" : "0.90"
+    tensor_parallel   = each.value.tp
+    # Batch sizing differs by role: the primary/live node (var.node_sku, e.g.
+    # 2x RTX PRO 6000) has the larger KV pool; the bake/devel standby (a single
+    # RTX PRO 6000 running Int4) has only ~13.9 GiB.
+    max_num_seqs       = each.value.sku == var.node_sku ? 16 : 10
+    max_batched_tokens = each.value.sku == var.node_sku ? 8192 : 4096
+    gpu_memory_util    = each.value.sku == var.node_sku ? "0.92" : "0.90"
   })
 }

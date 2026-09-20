@@ -12,10 +12,13 @@ can I actually get the box?
                                data source)
   preflight.py --watch 900     poll every 15 min, log history, shout on change
 
-/v1/instance-availability is PUBLIC - no credentials required.
+/v1/instance-availability now requires an OAuth2 bearer token (it returned
+"unauthorized_request" without one as of 2026-09-19, despite older docs calling
+it public). Requires VERDA_CLIENT_ID / VERDA_CLIENT_SECRET, same as the
+Makefile's orphans/images targets.
 
 Exit codes:  0 design target available | 1 only a fallback | 3 nothing available
-             4 API unreachable
+             4 API unreachable | 5 credentials missing or rejected
 """
 import argparse, datetime, json, os, sys, time, urllib.request, urllib.error
 
@@ -33,10 +36,39 @@ LADDER = [
 BLOCKED = {"1B200.30V", "1B300.30V", "1GB300.32V", "1L40S.20V", "1A100.40S.22V"}
 
 
+def get_token(timeout=20):
+    client_id = os.environ.get("VERDA_CLIENT_ID")
+    client_secret = os.environ.get("VERDA_CLIENT_SECRET")
+    if not client_id or not client_secret:
+        raise RuntimeError("VERDA_CLIENT_ID/VERDA_CLIENT_SECRET not set")
+    body = json.dumps({
+        "grant_type": "client_credentials",
+        "client_id": client_id,
+        "client_secret": client_secret,
+    }).encode()
+    req = urllib.request.Request(
+        f"{API}/oauth2/token",
+        data=body,
+        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        payload = json.load(r)
+    token = payload.get("access_token")
+    if not token:
+        raise RuntimeError(f"oauth2/token response had no access_token: {payload}")
+    return token
+
+
 def fetch(timeout=20):
+    token = get_token(timeout=timeout)
     req = urllib.request.Request(
         f"{API}/instance-availability",
-        headers={"Accept": "application/json", "User-Agent": "redcell-preflight/1.0"},
+        headers={
+            "Accept": "application/json",
+            "User-Agent": "redcell-preflight/1.0",
+            "Authorization": f"Bearer {token}",
+        },
     )
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.load(r)
@@ -108,6 +140,11 @@ def main():
     def once():
         try:
             by_loc = parse(fetch())
+        except RuntimeError as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            print("Set VERDA_CLIENT_ID/VERDA_CLIENT_SECRET (see .env.example) and re-run.",
+                  file=sys.stderr)
+            return 5, None, None
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as e:
             print(f"ERROR: {API}/instance-availability unreachable: {e}", file=sys.stderr)
             return 4, None, None
