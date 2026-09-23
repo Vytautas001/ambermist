@@ -36,6 +36,10 @@ EU-resident inference, hard €500 budget.
 - infra: `cd infra && tofu fmt -check -recursive && tofu init -backend=false && tofu validate`
 - harness: `cd harness && ruff check src tests && pytest -q`
 
+## Completion workflow
+- After the requested changes are implemented and verified, commit the related
+  changes. Never commit `.env`, credentials, generated state, or unrelated user work.
+
 ## Model choice (why, so you don't "helpfully" swap it)
 Primary `Qwen/Qwen3.5-122B-A10B` (Apache 2.0). Chosen for a 3:1 linear:full
 attention layout that cuts KV cost ~8× vs a dense peer — that's what makes 8×128k

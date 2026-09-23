@@ -31,7 +31,7 @@ make p0   # pull weights to the persistent volume (once)
 make p1   # 21h  Red Cell builds the harness (this repo's harness/)
 make p2   # 10h  model bake-off (evals/)
 make p4   # 46h  rehearsal + live, two nodes held continuously
-make off  # only after the exercise
+make off  # only after the exercise; also removes detached redcell OS volumes
 ```
 
 Harness:

@@ -2,7 +2,7 @@
 # Verda Red Cell infrastructure
 #
 #   make p0 / p1 / p2 / p3 / p4   bring up a phase
-#   make off                      destroy all GPUs, keep the weights volume
+#   make off                      destroy all GPUs and project OS-volume orphans
 #   make status                   what is running and what it costs
 #   make orphans                  find volumes nobody is paying attention to
 # =============================================================================
@@ -10,7 +10,7 @@ TF      ?= tofu               # set TF=terraform to use HashiCorp Terraform inst
 PHASES  := p0 p1 p2 p4 off
 VARFILE  = phases/$(word 1,$(wildcard phases/$(PHASE)-*.tfvars phases/$(PHASE).tfvars))
 
-.PHONY: help init fmt validate $(PHASES) plan-% status cost off orphans clean
+.PHONY: help init fmt validate $(PHASES) plan-% status cost off orphans reap-orphans clean
 
 help:
 	@grep -E '^[a-z0-9-]+:.*?##' $(MAKEFILE_LIST) | sed 's/:.*##/\t/' | column -t -s "$$(printf '\t')"
@@ -40,6 +40,7 @@ p4: ## LIVE: rehearsal + exercise, 2 nodes active-active, held 46h
 
 off: ## destroy all GPUs, keep the weights volume
 	@$(MAKE) apply PHASE=off
+	@$(MAKE) reap-orphans
 
 plan-%: check-creds
 	$(TF) plan -var-file=$$(ls phases/$**.tfvars)
@@ -81,6 +82,9 @@ orphans: ## list volumes in the account; anything not in state is billing silent
 	 $(TF) state list 2>/dev/null | grep -E 'verda_volume\.' || echo "(none)"; \
 	 echo; echo "Destroying an instance does NOT delete its OS volume. Anything above"; \
 	 echo "that terraform does not know about is costing you money."
+
+reap-orphans: check-creds ## delete detached redcell OS volumes left by destroyed instances
+	@python3 ../ops/cleanup_orphans.py --project redcell --yes
 
 images: ## list image identifiers available to your account
 	@TOKEN=$$(curl -sS -X POST https://api.verda.com/v1/oauth2/token \
