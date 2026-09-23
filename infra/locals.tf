@@ -59,7 +59,12 @@ locals {
     off = {}
 
     p0 = {
-      primary = { role = "bake", sku = local.sku.rtxpro_1, tp = 1, spot = true, model = var.standby_model, ctx = var.standby_max_model_len, serve = false, wt_gb = var.standby_weights_gb, kv_gb = var.standby_kv_gb }
+      # 1RTXPRO6000.30V capacity is flapping across all three sites (503'd in
+      # FIN-02, then again in FIN-03 seconds after the availability API listed
+      # it). p0 doesn't serve, so GPU family doesn't matter here - h200_1 is a
+      # single-GPU SKU with enough VRAM for the standby footprint and was also
+      # listed available in FIN-03.
+      primary = { role = "bake", sku = local.sku.h200_1, tp = 1, spot = true, model = var.standby_model, ctx = var.standby_max_model_len, serve = false, wt_gb = var.standby_weights_gb, kv_gb = var.standby_kv_gb }
     }
 
     p1 = {

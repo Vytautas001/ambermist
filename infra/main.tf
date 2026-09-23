@@ -33,7 +33,11 @@ resource "verda_volume" "weights" {
   on_spot_discontinue = "keep_detached"
 
   lifecycle {
-    prevent_destroy = true
+    # TEMPORARILY disabled to move this volume FIN-02 -> FIN-03 (1RTXPRO6000.30V
+    # has no capacity in FIN-02; it's in stock in FIN-03). Volume is empty - no
+    # instance has ever attached to it. RESTORE THIS to `true` right after the
+    # move applies cleanly.
+    prevent_destroy = false
   }
 }
 
@@ -52,6 +56,7 @@ resource "verda_startup_script" "role" {
   script = templatefile("${path.module}/scripts/startup.sh.tftpl", {
     project           = var.project
     role              = each.value.role
+    location          = var.location
     weights_mount     = local.weights_mount
     vllm_image        = var.vllm_image
     served_model_name = var.served_model_name

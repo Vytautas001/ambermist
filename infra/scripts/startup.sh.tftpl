@@ -26,52 +26,67 @@ TP="${tensor_parallel}"
 NODE="${role}"
 
 # -----------------------------------------------------------------------------
-# 1. Wait for the shared NVMe volume.
+# 1. Wait for the shared weights volume.
 #
-# verda_volume_attachment is applied AFTER the instance exists, so at first boot
-# the device may not be present yet. Poll rather than fail.
+# type = NVMe_Shared attaches as an NFS export (that's what makes it mountable
+# by multiple instances at once - a real local NVMe block device can't do
+# that), not a block device. verda_volume_attachment is applied AFTER the
+# instance exists, and the export path is only known once that attachment
+# completes, so it can't be baked into this script at render time. Poll for it
+# at boot instead, the same way we'd poll for a block device.
+#
+# This used to discover the export path with `showmount -e` before mounting.
+# Verda's NFS front end here answers on nfsd (2049) but drops portmapper
+# (111) traffic instead of rejecting it - an NFSv4-only setup - so showmount
+# doesn't fail fast, it hangs forever on a single attempt and silently
+# defeats this loop's whole retry budget.
+#
+# The export name isn't just "${project}-weights" either - Verda appends an
+# opaque per-attachment suffix ("${project}-weights-<id>") that isn't derivable
+# from anything known at template-render time (checked: it's not the volume id
+# or the instance id, it's assigned when the attachment is created, which is
+# necessarily after this script is rendered - see the ordering note above).
+# So discovery is still required, just not via portmapper: mount the server's
+# NFSv4 pseudo-root (needs only nfsd/2049, same as the real mount) and read
+# the export name off its directory listing instead of asking rpcbind for it.
 # -----------------------------------------------------------------------------
 mkdir -p "$MOUNT"
 
-find_weights_device() {
-  # Prefer an already-formatted volume carrying our label.
-  local by_label="/dev/disk/by-label/${project}-weights"
-  [[ -e "$by_label" ]] && { readlink -f "$by_label"; return 0; }
+command -v mount.nfs >/dev/null 2>&1 || apt-get update -qq && apt-get install -qq -y nfs-common
 
-  # Otherwise: the largest unmounted block device that is not the OS disk.
-  lsblk -bdnp -o NAME,SIZE,TYPE,MOUNTPOINT \
-    | awk '$3=="disk" && $4=="" {print $2, $1}' \
-    | sort -rn | head -n1 | awk '{print $2}'
+NFS_SERVER="nfs.$(echo "${location}" | tr '[:upper:]' '[:lower:]').datacrunch.io"
+PROBE="/mnt/.nfsroot-probe"
+mkdir -p "$PROBE"
+
+find_weights_export() {
+  timeout 15 mount -t nfs -o vers=4 "$NFS_SERVER:/" "$PROBE" 2>/dev/null || return 1
+  local name
+  name="$(ls -1 "$PROBE" 2>/dev/null | grep -m1 "^${project}-weights")"
+  umount "$PROBE" 2>/dev/null || true
+  [[ -n "$name" ]] && echo "/$name"
 }
 
-DEV=""
+EXPORT=""
 for i in $(seq 1 60); do          # up to 10 minutes
-  DEV="$(find_weights_device || true)"
-  if [[ -n "$DEV" && -b "$DEV" ]]; then
-    echo "found candidate weights device: $DEV (attempt $i)"
+  EXPORT="$(find_weights_export || true)"
+  if [[ -n "$EXPORT" ]]; then
+    echo "found weights export: $NFS_SERVER:$EXPORT (attempt $i)"
     break
   fi
-  echo "waiting for weights volume attachment... ($i/60)"
+  echo "waiting for weights volume attachment on $NFS_SERVER... ($i/60)"
   sleep 10
 done
 
-if [[ -z "$DEV" || ! -b "$DEV" ]]; then
-  echo "FATAL: weights volume never appeared. Attach it manually and re-run:"
-  echo "  systemctl start ${project}-vllm.service"
+if [[ -z "$EXPORT" ]]; then
+  echo "FATAL: weights volume export never appeared on $NFS_SERVER."
+  echo "Check verda_volume_attachment.weights and mount manually:"
+  echo "  tofu output -json mount_commands"
   exit 1
 fi
 
-# Format ONLY if there is no filesystem. Never reformat a volume that already
-# holds ~300GB of checkpoints.
-if ! blkid "$DEV" >/dev/null 2>&1; then
-  echo "no filesystem on $DEV — creating ext4 (first use)"
-  mkfs.ext4 -L "${project}-weights" "$DEV"
-else
-  echo "existing filesystem on $DEV — mounting as-is"
-fi
-
-mount "$DEV" "$MOUNT" || { echo "FATAL: mount failed"; exit 1; }
-grep -q "$MOUNT" /etc/fstab || echo "LABEL=${project}-weights $MOUNT ext4 defaults,nofail 0 2" >> /etc/fstab
+mount -t nfs -o vers=4,nconnect=16 "$NFS_SERVER:$EXPORT" "$MOUNT" || { echo "FATAL: mount failed"; exit 1; }
+grep -qxF "$NFS_SERVER:$EXPORT $MOUNT nfs defaults,vers=4,nconnect=16 0 0" /etc/fstab \
+  || echo "$NFS_SERVER:$EXPORT $MOUNT nfs defaults,vers=4,nconnect=16 0 0" >> /etc/fstab
 mkdir -p "$MOUNT/hf-cache" "$MOUNT/logs"
 df -h "$MOUNT"
 

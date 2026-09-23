@@ -10,9 +10,10 @@ ssh_public_keys = {
   "whitecell" = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... wc@exercise"
 }
 
-# Confirm against your own account before the first apply:
-#   curl -H "Authorization: Bearer $TOKEN" https://api.verda.com/v1/images
-image = "ubuntu-24.04-cuda-12.8-open-docker"
+# Confirm against your own account before the first apply: `make images`.
+# Must be a "docker" category image (startup script requires Docker
+# preinstalled); use the `image_type` slug, not the `id`.
+image = "24.04.cuda12.9.docker"
 
 weights_volume_size_gb = 400
 os_volume_size_gb      = 100

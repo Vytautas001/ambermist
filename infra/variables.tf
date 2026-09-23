@@ -53,11 +53,14 @@ variable "location" {
 variable "image" {
   description = <<-EOT
     Base image identifier. The provider does NOT validate this — a wrong string
-    fails at apply, not at plan. Confirm against your own account with:
-      curl -H "Authorization: Bearer $TOKEN" https://api.verda.com/v1/images
+    fails at apply, not at plan. Confirm against your own account with
+    `make images` (catalog contents and even the slug naming scheme drift over
+    time — this default has already broken once). Must be a "docker" category
+    image; scripts/startup.sh.tftpl requires Docker preinstalled. Use the
+    `image_type` field from `make images`, not the `id`.
   EOT
   type        = string
-  default     = "ubuntu-24.04-cuda-12.8-open-docker"
+  default     = "24.04.cuda12.9.docker"
 }
 
 variable "ssh_public_keys" {

@@ -6,7 +6,7 @@
 #   make status                   what is running and what it costs
 #   make orphans                  find volumes nobody is paying attention to
 # =============================================================================
-TF      ?= terraform          # set TF=tofu to use OpenTofu
+TF      ?= tofu               # set TF=terraform to use HashiCorp Terraform instead
 PHASES  := p0 p1 p2 p4 off
 VARFILE  = phases/$(word 1,$(wildcard phases/$(PHASE)-*.tfvars phases/$(PHASE).tfvars))
 
@@ -42,7 +42,7 @@ off: ## destroy all GPUs, keep the weights volume
 	@$(MAKE) apply PHASE=off
 
 plan-%: check-creds
-	$(TF) plan -var-file=$$(ls phases/$*[-.]*.tfvars)
+	$(TF) plan -var-file=$$(ls phases/$**.tfvars)
 
 preflight: check-creds ## is the target SKU actually in stock right now?
 	@python3 ../ops/preflight.py
@@ -57,7 +57,7 @@ apply: check-creds
 	  echo; echo "Preflight did not return the design target."; \
 	  echo "Set node_sku/node_tp to an available rung, or read docs/CAPACITY-RUNBOOK.md."; \
 	  read -p "Continue anyway? [y/N] " a; [ "$$a" = "y" ] || exit 1; }
-	$(TF) apply -var-file=$$(ls phases/$(PHASE)[-.]*.tfvars)
+	$(TF) apply -var-file=$$(ls phases/$(PHASE)*.tfvars)
 	@$(TF) output -raw burn_warning 2>/dev/null && echo
 
 status: ## show instances and cost projection
