@@ -19,6 +19,11 @@ EU-resident inference, hard €500 budget.
   adversary system prompt carries scope + authorisation; per-turn injects stay clean
   (per-turn authorisation measurably increases refusals).
 
+## Environment setup
+- Before running Verda/OpenTofu commands or `infra` Make targets, source the
+  repository-root `.env` file so credentials are available in the environment:
+  `set -a; source .env; set +a`. Never commit `.env` or print its contents.
+
 ## Layout
 - `infra/` — Terraform/OpenTofu root module. `make preflight`, `make p0..p4`, `make off`.
 - `harness/` — the `redcell` Python package: client, agent loop, tools, audit. `pytest`.
