@@ -1,5 +1,9 @@
 # Qwen3.8 GGUF experiment on one RTX PRO 6000
 
+For the current hardware-independent design and concurrency discovery at 126k
+input, see [the deployment specification](MODEL-DEPLOYMENT-SPEC.md). This document
+is the earlier fixed two-slot experiment, not a measured capacity limit.
+
 This is a temporary, reversible capacity and performance experiment for the
 `1RTXPRO6000.30V` instance (one RTX PRO 6000 with 96 GB VRAM) in Finland. It
 does not change production model defaults, the router, or the current systemd
@@ -117,8 +121,7 @@ apt-get install -y build-essential cmake git libcurl4-openssl-dev
 cd /mnt/weights/qwen38-test
 git clone https://github.com/ggml-org/llama.cpp.git
 cd llama.cpp
-git fetch origin pull/27742/head:pr27742
-git switch --detach pr27742
+git checkout --detach "${LLAMA_CPP_REV:?Set a reviewed full upstream commit from the deployment lock}"
 git rev-parse HEAD > ../llama.cpp-revision.txt
 
 cmake -S . -B build \
@@ -129,12 +132,12 @@ cmake -S . -B build \
 cmake --build build --config Release -j 8 --target llama-server
 ```
 
-This GGUF uses the experimental `qwen4_exp` architecture, which is not in a
-released llama.cpp version. The checkpoint publisher says it requires the
-support from [upstream PR #27742](https://github.com/ggml-org/llama.cpp/pull/27742)
-and will not load on stock llama.cpp. The fetched PR head is detached and its
-exact commit is written to `llama.cpp-revision.txt`; preserve that file with
-the measurements. The GGUF format may change before the PR is merged.
+Architecture support was merged in
+[upstream PR #27742](https://github.com/ggml-org/llama.cpp/pull/27742). Set
+`LLAMA_CPP_REV` to a reviewed full upstream commit containing that support and
+the required server flags before running this block. Record the selected commit
+with the measurements and verify that it loads the pinned GGUF; the publisher's
+older statement that an open PR build is required is stale.
 
 ## 4. Stop vLLM and start the temporary server
 

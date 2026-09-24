@@ -6,6 +6,11 @@ AI adversary-simulation platform for a Blue-vs-Red cyber defence exercise.
 > Full design: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) ·
 > Capacity procedure: [`docs/CAPACITY-RUNBOOK.md`](docs/CAPACITY-RUNBOOK.md)
 
+Portable model deployment specification:
+[`docs/MODEL-DEPLOYMENT-SPEC.md`](docs/MODEL-DEPLOYMENT-SPEC.md) covers Qwen3.8
+Abliterated on H200, H100, and RTX PRO 6000, reusable deployment profiles, and
+measuring comfortable concurrency at 126k input. Capacity figures are provisional.
+
 ## Layout
 
 | Path | What |
