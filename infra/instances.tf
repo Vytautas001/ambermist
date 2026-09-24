@@ -29,9 +29,10 @@ resource "verda_instance" "gpu" {
     size = var.os_volume_size_gb
     type = "NVMe"
 
-    # Spot only; harmless on on-demand. Without this an OS volume orphaned by a
-    # spot reclaim keeps billing until someone notices it in the console.
-    on_spot_discontinue = "delete_permanently"
+    # Spot only; the provider rejects this policy on on-demand contracts.
+    # Without it on spot, an OS volume orphaned by a reclaim keeps billing until
+    # someone notices it in the console.
+    on_spot_discontinue = each.value.spot ? "delete_permanently" : null
   }
 
   lifecycle {
@@ -39,6 +40,15 @@ resource "verda_instance" "gpu" {
     # happily plan an in-place update for it — which then fails at apply with
     # "Update Not Supported" and leaves you stuck. Force a replace instead.
     replace_triggered_by = [terraform_data.instance_identity[each.key]]
+
+    # p0 and p1 intentionally share one immutable development node. If a
+    # future edit accidentally changes its identity, fail before destroying a
+    # running machine; p2/p4/live4 remain explicitly replaceable transitions.
+    prevent_destroy = contains(["p0", "p1"], var.phase)
+
+    # Older nodes include the phase in their provider description. Do not
+    # replace a running node just to normalize that historical metadata.
+    ignore_changes = [description]
 
     precondition {
       condition     = !(startswith(each.value.role, "live") && each.value.spot)

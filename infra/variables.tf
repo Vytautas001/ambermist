@@ -13,8 +13,8 @@ variable "phase" {
     Which exercise phase to stand up. Determines which GPU instances exist.
 
       off  - no GPUs at all (volume and keys persist).  Use between phases.
-      p0   - image bake / weight pull.      1x RTX PRO 6000 (spot)
-      p1   - Red Cell harness development.  1x RTX PRO 6000 (on-demand)
+      p0   - image bake / weight pull.      1x H200 (on-demand)
+      p1   - Red Cell harness development.  1x H200 (on-demand)
       p2   - model bake-off.                1x B200 (spot)
       p3   - dress rehearsal.               1x B200 (on-demand)
       p4   - LIVE exercise.                 1x B200 (on-demand) + 1x RTX PRO 6000 standby

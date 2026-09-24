@@ -29,9 +29,9 @@ check-creds:
 	@test -n "$$VERDA_CLIENT_SECRET" || { echo "ERROR: VERDA_CLIENT_SECRET not set"; exit 1; }
 
 # ---- phase targets ----------------------------------------------------------
-p0: ## bake: pull weights to the persistent volume (3h, RTXPRO spot)
+p0: ## bake: pull weights to the persistent volume (3h, 1x H200 on-demand)
 	@$(MAKE) apply PHASE=p0
-p1: ## devel: Red Cell harness + prompts (21h, RTXPRO spot)
+p1: ## devel: Red Cell harness + prompts (21h, 1x H200 on-demand)
 	@$(MAKE) apply PHASE=p1
 p2: ## bake-off: 3 models at 64k/128k (10h, 2x RTXPRO spot)
 	@$(MAKE) apply PHASE=p2

@@ -59,16 +59,13 @@ locals {
     off = {}
 
     p0 = {
-      # 1RTXPRO6000.30V capacity is flapping across all three sites (503'd in
-      # FIN-02, then again in FIN-03 seconds after the availability API listed
-      # it). p0 doesn't serve, so GPU family doesn't matter here - h200_1 is a
-      # single-GPU SKU with enough VRAM for the standby footprint and was also
-      # listed available in FIN-03.
-      primary = { role = "bake", sku = local.sku.h200_1, tp = 1, spot = true, model = var.standby_model, ctx = var.standby_max_model_len, serve = false, wt_gb = var.standby_weights_gb, kv_gb = var.standby_kv_gb }
+      # Use the requested single H200 on-demand for the bake and keep it
+      # available for the development phase.
+      primary = { role = "devel", sku = local.sku.h200_1, tp = 1, spot = false, model = var.standby_model, ctx = var.standby_max_model_len, serve = true, wt_gb = var.standby_weights_gb, kv_gb = var.standby_kv_gb }
     }
 
     p1 = {
-      primary = { role = "devel", sku = local.sku.rtxpro_1, tp = 1, spot = true, model = var.standby_model, ctx = var.standby_max_model_len, serve = true, wt_gb = var.standby_weights_gb, kv_gb = var.standby_kv_gb }
+      primary = { role = "devel", sku = local.sku.h200_1, tp = 1, spot = false, model = var.standby_model, ctx = var.standby_max_model_len, serve = true, wt_gb = var.standby_weights_gb, kv_gb = var.standby_kv_gb }
     }
 
     p2 = {
@@ -123,5 +120,7 @@ locals {
 
   weights_mount = "/mnt/weights"
 
-  common_tags_description = "cyber-defence-exercise/${var.project} phase=${var.phase} managed-by=terraform"
+  # Keep the instance description stable across p0 -> p1. Phase is tracked in
+  # terraform_data.budget_guard and must not force a running node replacement.
+  common_tags_description = "cyber-defence-exercise/${var.project} managed-by=terraform"
 }

@@ -33,11 +33,7 @@ resource "verda_volume" "weights" {
   on_spot_discontinue = "keep_detached"
 
   lifecycle {
-    # TEMPORARILY disabled to move this volume FIN-02 -> FIN-03 (1RTXPRO6000.30V
-    # has no capacity in FIN-02; it's in stock in FIN-03). Volume is empty - no
-    # instance has ever attached to it. RESTORE THIS to `true` right after the
-    # move applies cleanly.
-    prevent_destroy = false
+    prevent_destroy = true
   }
 }
 
@@ -51,6 +47,13 @@ resource "verda_volume" "weights" {
 # ---------------------------------------------------------------------------
 resource "verda_startup_script" "role" {
   for_each = local.roles
+
+  lifecycle {
+    # Verda does not support updating startup scripts. Phase changes alter the
+    # role, model, location, or serving settings, so replace the script with
+    # the corresponding immutable instance identity.
+    replace_triggered_by = [terraform_data.instance_identity[each.key]]
+  }
 
   name = "${var.project}-${each.value.role}"
   script = templatefile("${path.module}/scripts/startup.sh.tftpl", {
