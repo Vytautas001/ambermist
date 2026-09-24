@@ -199,6 +199,29 @@ variable "node_tp" {
   }
 }
 
+variable "phase_node_sku" {
+  description = "Launch-time instance type override for the shared p0/p1 development node."
+  type        = string
+  default     = ""
+}
+
+variable "phase_node_tp" {
+  description = "Launch-time tensor parallelism override for the shared p0/p1 development node."
+  type        = number
+  default     = 0
+
+  validation {
+    condition     = contains([0, 1, 2, 4, 8], var.phase_node_tp)
+    error_message = "phase_node_tp must be 0 (use node_tp) or 1, 2, 4 or 8."
+  }
+}
+
+variable "phase_node_spot" {
+  description = "Whether the shared p0/p1 development node is spot; keep false for a stable phase transition."
+  type        = bool
+  default     = false
+}
+
 variable "spend_to_date_eur" {
   description = <<-EOT
     EUR already spent in previous phases. Update this after each phase from the

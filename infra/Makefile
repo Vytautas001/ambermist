@@ -9,6 +9,21 @@
 TF      ?= tofu               # set TF=terraform to use HashiCorp Terraform instead
 PHASES  := p0 p1 p2 p4 off
 VARFILE  = phases/$(word 1,$(wildcard phases/$(PHASE)-*.tfvars phases/$(PHASE).tfvars))
+TF_ARGS ?=
+
+# Pass launch-time machine/location choices as make variables, e.g.:
+#   make p1 location=FIN-02 phase_node_sku=1H200.141S.44V phase_node_tp=1
+TF_VAR_ARGS = $(if $(location),-var=location=$(location)) \
+              $(if $(phase_node_sku),-var=phase_node_sku=$(phase_node_sku)) \
+              $(if $(phase_node_tp),-var=phase_node_tp=$(phase_node_tp)) \
+              $(if $(phase_node_spot),-var=phase_node_spot=$(phase_node_spot)) \
+              $(if $(node_sku),-var=node_sku=$(node_sku)) \
+              $(if $(node_tp),-var=node_tp=$(node_tp))
+PREFLIGHT_TARGET_SKU = $(if $(phase_node_sku),$(phase_node_sku),$(node_sku))
+PREFLIGHT_TARGET_TP  = $(if $(phase_node_tp),$(phase_node_tp),$(node_tp))
+PREFLIGHT_ARGS = $(if $(PREFLIGHT_TARGET_SKU),--target-sku $(PREFLIGHT_TARGET_SKU)) \
+                 $(if $(PREFLIGHT_TARGET_TP),--target-tp $(PREFLIGHT_TARGET_TP)) \
+                 $(if $(location),--target-location $(location))
 
 .PHONY: help init fmt validate $(PHASES) plan-% status cost off orphans reap-orphans clean
 
@@ -29,9 +44,9 @@ check-creds:
 	@test -n "$$VERDA_CLIENT_SECRET" || { echo "ERROR: VERDA_CLIENT_SECRET not set"; exit 1; }
 
 # ---- phase targets ----------------------------------------------------------
-p0: ## bake: pull weights to the persistent volume (3h, 1x H200 on-demand)
+p0: ## bake: pull weights to the persistent volume (launch-time GPU)
 	@$(MAKE) apply PHASE=p0
-p1: ## devel: Red Cell harness + prompts (21h, 1x H200 on-demand)
+p1: ## devel: Red Cell harness + prompts (launch-time GPU)
 	@$(MAKE) apply PHASE=p1
 p2: ## bake-off: 3 models at 64k/128k (10h, 2x RTXPRO spot)
 	@$(MAKE) apply PHASE=p2
@@ -43,10 +58,10 @@ off: ## destroy all GPUs, keep the weights volume
 	@$(MAKE) reap-orphans
 
 plan-%: check-creds
-	$(TF) plan -var-file=$$(ls phases/$**.tfvars)
+	$(TF) plan -var-file=$$(ls phases/$**.tfvars) $(TF_VAR_ARGS) $(TF_ARGS)
 
 preflight: check-creds ## is the target SKU actually in stock right now?
-	@python3 ../ops/preflight.py
+	@python3 ../ops/preflight.py $(PREFLIGHT_ARGS)
 
 watch: check-creds ## poll availability every 15 min and log history (run this from now until the exercise)
 	@python3 ../ops/preflight.py --watch 900
@@ -54,11 +69,11 @@ watch: check-creds ## poll availability every 15 min and log history (run this f
 apply: check-creds
 	@echo "=== phase $(PHASE) ==="
 	@echo "--- capacity preflight ---"
-	@python3 ../ops/preflight.py || { \
+	@python3 ../ops/preflight.py $(PREFLIGHT_ARGS) || { \
 	  echo; echo "Preflight did not return the design target."; \
-	  echo "Set node_sku/node_tp to an available rung, or read docs/CAPACITY-RUNBOOK.md."; \
+	  echo "Set phase_node_sku/phase_node_tp/location to an available target, or read docs/CAPACITY-RUNBOOK.md."; \
 	  read -p "Continue anyway? [y/N] " a; [ "$$a" = "y" ] || exit 1; }
-	$(TF) apply -var-file=$$(ls phases/$(PHASE)*.tfvars)
+	$(TF) apply -var-file=$$(ls phases/$(PHASE)*.tfvars) $(TF_VAR_ARGS) $(TF_ARGS)
 	@$(TF) output -raw burn_warning 2>/dev/null && echo
 
 status: ## show instances and cost projection

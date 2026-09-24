@@ -59,13 +59,13 @@ locals {
     off = {}
 
     p0 = {
-      # Use the requested single H200 on-demand for the bake and keep it
-      # available for the development phase.
-      primary = { role = "devel", sku = local.sku.h200_1, tp = 1, spot = false, model = var.standby_model, ctx = var.standby_max_model_len, serve = true, wt_gb = var.standby_weights_gb, kv_gb = var.standby_kv_gb }
+      # p0 and p1 intentionally share this identity. Select the SKU, TP and
+      # spot mode at launch; changing them later is blocked while it is running.
+      primary = { role = "devel", sku = local.phase_node_sku, tp = local.phase_node_tp, spot = var.phase_node_spot, model = var.standby_model, ctx = var.standby_max_model_len, serve = true, wt_gb = var.standby_weights_gb, kv_gb = var.standby_kv_gb }
     }
 
     p1 = {
-      primary = { role = "devel", sku = local.sku.h200_1, tp = 1, spot = false, model = var.standby_model, ctx = var.standby_max_model_len, serve = true, wt_gb = var.standby_weights_gb, kv_gb = var.standby_kv_gb }
+      primary = { role = "devel", sku = local.phase_node_sku, tp = local.phase_node_tp, spot = var.phase_node_spot, model = var.standby_model, ctx = var.standby_max_model_len, serve = true, wt_gb = var.standby_weights_gb, kv_gb = var.standby_kv_gb }
     }
 
     p2 = {
@@ -82,6 +82,9 @@ locals {
   }
 
   active = local.phases[var.phase]
+
+  phase_node_sku = var.phase_node_sku != "" ? var.phase_node_sku : var.node_sku
+  phase_node_tp  = var.phase_node_tp != 0 ? var.phase_node_tp : var.node_tp
 
   roles = merge(
     try(local.active.primary, null) != null ? { node_a = local.active.primary } : {},

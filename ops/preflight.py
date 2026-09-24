@@ -101,8 +101,28 @@ def evaluate(by_loc):
     return rungs, best
 
 
-def report(rungs, best, by_loc, as_json):
+def report(rungs, best, by_loc, as_json, target_sku=None, target_tp=None,
+           target_location=None):
     ts = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+    if target_sku:
+        target_locs = sorted(l for l, types in by_loc.items() if target_sku in types)
+        if target_location:
+            target_locs = [l for l in target_locs if l == target_location]
+        known = next((r for r in rungs if r["sku"] == target_sku), None)
+        if known and target_tp and known["tp"] != target_tp:
+            target_locs = []
+        if as_json:
+            print(json.dumps({"checked_at": ts, "target": {
+                "sku": target_sku, "tp": target_tp,
+                "location": target_location, "available": bool(target_locs),
+                "locations": target_locs}}, indent=2))
+        else:
+            where = ",".join(target_locs) or "-"
+            mark = "AVAILABLE" if target_locs else "UNAVAILABLE"
+            print(f"=== capacity preflight {ts} ===")
+            print(f"  -> requested {mark}: {target_sku} TP={target_tp or '-'} [{where}]")
+        return 0 if target_locs else 3
+
     if as_json:
         print(json.dumps({"checked_at": ts, "best": best, "ladder": rungs,
                           "locations_seen": sorted(by_loc)}, indent=2))
@@ -135,6 +155,9 @@ def main():
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--watch", type=int, metavar="SECONDS")
     ap.add_argument("--history", default="preflight-history.log")
+    ap.add_argument("--target-sku")
+    ap.add_argument("--target-tp", type=int)
+    ap.add_argument("--target-location")
     a = ap.parse_args()
 
     def once():
@@ -149,7 +172,8 @@ def main():
             print(f"ERROR: {API}/instance-availability unreachable: {e}", file=sys.stderr)
             return 4, None, None
         rungs, best = evaluate(by_loc)
-        return report(rungs, best, by_loc, a.json), rungs, best
+        return report(rungs, best, by_loc, a.json, a.target_sku, a.target_tp,
+                      a.target_location), rungs, best
 
     if a.watch is None:
         sys.exit(once()[0])
