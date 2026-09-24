@@ -26,3 +26,9 @@ BASE_URL=... python runner.py --context 131072 --out results/qwen-128k.json
 ```
 
 Then `python compare.py results/*.json` for the side-by-side.
+
+The sequential bake-off runner does not establish concurrent full-context
+capacity. For the temporary two-slot llama.cpp trial on the existing H200, use
+[`../docs/QWEN38-H200-EXPERIMENT.md`](../docs/QWEN38-H200-EXPERIMENT.md) and
+`llama_two_slot_context.py`; it measures the actual rendered prompt with the
+server tokenizer before submitting both streams concurrently.
