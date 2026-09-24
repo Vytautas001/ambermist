@@ -18,13 +18,14 @@ variable "phase" {
       p2   - model bake-off.                1x B200 (spot)
       p3   - dress rehearsal.               1x B200 (on-demand)
       p4   - LIVE exercise.                 1x B200 (on-demand) + 1x RTX PRO 6000 standby
+      live4 - LIVE, 4 teams, held a week.   1x RTX PRO 6000 Int4 at 128k (on-demand)
   EOT
   type        = string
   default     = "off"
 
   validation {
-    condition     = contains(["off", "p0", "p1", "p2", "p3", "p4"], var.phase)
-    error_message = "phase must be one of: off, p0, p1, p2, p3, p4."
+    condition     = contains(["off", "p0", "p1", "p2", "p3", "p4", "live4"], var.phase)
+    error_message = "phase must be one of: off, p0, p1, p2, p3, p4, live4."
   }
 }
 
@@ -258,6 +259,21 @@ variable "weights_footprint_gb" {
   description = "On-GPU size of the primary checkpoint. Qwen3.5-122B-A10B FP8 ~125, Ling-3.0-flash FP8 ~124, Nemotron-3-Super FP8 ~120, GPTQ-Int4 ~68."
   type        = number
   default     = 125
+}
+
+variable "sessions" {
+  description = <<-EOT
+    Concurrent adversary sessions (one per defending team). Sizes the KV cache of
+    the live4 phase and divides the per-session throughput estimate. kv_footprint_gb
+    stays quoted for 8 sessions; live4 scales it by sessions/8.
+  EOT
+  type        = number
+  default     = 8
+
+  validation {
+    condition     = var.sessions >= 1 && var.sessions <= 16
+    error_message = "sessions must be between 1 and 16."
+  }
 }
 
 variable "kv_footprint_gb" {

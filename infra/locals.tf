@@ -79,6 +79,16 @@ locals {
       primary   = { role = "live-a", sku = var.node_sku, tp = var.node_tp, spot = false, model = var.primary_model, ctx = var.primary_max_model_len, serve = true, wt_gb = var.weights_footprint_gb, kv_gb = var.kv_footprint_gb }
       secondary = { role = "live-b", sku = var.node_sku, tp = var.node_tp, spot = false, model = var.primary_model, ctx = var.primary_max_model_len, serve = true, wt_gb = var.weights_footprint_gb, kv_gb = var.kv_footprint_gb }
     }
+
+    # Reduced live exercise: 4 teams on ONE RTX PRO 6000 running Int4 at the FULL
+    # 128k context. 4 x 128k x 12 KiB = 6 GiB KV against a ~13.9 GiB pool (2.3x
+    # headroom) - the same card that could only do 64k for 8 teams. Cheap enough
+    # (~EUR 1.6/h) to hold for a whole week, which is the point: capacity is
+    # acquired once, days early. No redundancy - a host fault stops the exercise
+    # until a replacement is found. max_seqs = 4 teams x router max_parallel_requests 3.
+    live4 = {
+      primary = { role = "live-a", sku = local.sku.rtxpro_1, tp = 1, spot = false, model = var.standby_model, ctx = var.primary_max_model_len, serve = true, wt_gb = var.standby_weights_gb, kv_gb = var.kv_footprint_gb * var.sessions / 8, max_seqs = 12 }
+    }
   }
 
   active = local.phases[var.phase]
@@ -119,7 +129,7 @@ locals {
   agg_bw_tb_s           = sum(concat([0], [for k, v in local.roles : local.catalog[v.sku].bw]))
   nodes_serving         = length([for k, v in local.roles : k if v.serve])
   est_tok_s_total       = local.agg_bw_tb_s * 1e12 * 0.50 / (var.active_params_b * 1e9) * 3.5
-  est_tok_s_per_session = local.nodes_serving > 0 ? local.est_tok_s_total / 8 : 0
+  est_tok_s_per_session = local.nodes_serving > 0 ? local.est_tok_s_total / var.sessions : 0
 
   weights_mount = "/mnt/weights"
 

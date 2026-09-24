@@ -50,6 +50,26 @@ the VRAM cannot hold `weights_footprint_gb + kv_footprint_gb`. If you drop to
 rung 4, set `weights_footprint_gb=68`, `kv_footprint_gb=12` and
 `primary_model=Qwen/Qwen3.5-122B-A10B-GPTQ-Int4` in the same apply.
 
+### 4-team variant: `make live4`
+
+With 4 teams instead of 8, KV drops from 12 GiB to **6 GiB** (4 × 128k × 12 KiB).
+The 125 GB of FP8 weights don't shrink, so FP8 still needs two GPUs — a single
+H200 cannot hold them at any session count. What changes is the Int4 card: one
+`1RTXPRO6000.30V` (68 GB weights, ~13.9 GiB KV pool) now serves all four teams at
+the **full 128k** with 2.3× headroom.
+
+| Setup (4 × 128k) | €/h | 40 live h | Held 168 h |
+|---|---:|---:|---:|
+| **1× RTX PRO 6000, Int4** (`live4`) | 1.585 | €63 | **€266** |
+| 2× RTX PRO 6000, FP8 | 3.170 | €127 | €533 |
+| 2× H200, FP8 | 7.456 | €298 | €1,253 |
+
+`live4` is the only setup cheap enough to **hold for the whole week** — capacity
+is acquired days early and never released. `tofu console` projects **€374.78**
+total with the default `spend_to_date_eur`. The trade: Int4 quality becomes the
+primary, and there is no second node. Point the router's `NODE_B_URL` at the
+same endpoint as `NODE_A_URL`.
+
 ---
 
 ## 3. If nothing on the ladder is available

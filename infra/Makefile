@@ -2,12 +2,13 @@
 # Verda Red Cell infrastructure
 #
 #   make p0 / p1 / p2 / p3 / p4   bring up a phase
+#   make live4                    4-team variant of p4, one node held a week
 #   make off                      destroy all GPUs and project OS-volume orphans
 #   make status                   what is running and what it costs
 #   make orphans                  find volumes nobody is paying attention to
 # =============================================================================
 TF      ?= tofu               # set TF=terraform to use HashiCorp Terraform instead
-PHASES  := p0 p1 p2 p4 off
+PHASES  := p0 p1 p2 p4 live4 off
 VARFILE  = phases/$(word 1,$(wildcard phases/$(PHASE)-*.tfvars phases/$(PHASE).tfvars))
 TF_ARGS ?=
 
@@ -52,6 +53,8 @@ p2: ## bake-off: 3 models at 64k/128k (10h, 2x RTXPRO spot)
 	@$(MAKE) apply PHASE=p2
 p4: ## LIVE: rehearsal + exercise, 2 nodes active-active, held 46h
 	@$(MAKE) apply PHASE=p4
+live4: ## LIVE, 4 teams: 1x RTXPRO Int4 at 128k, held a week (168h)
+	@$(MAKE) apply PHASE=live4
 
 off: ## destroy all GPUs, keep the weights volume
 	@$(MAKE) apply PHASE=off

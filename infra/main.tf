@@ -69,8 +69,8 @@ resource "verda_startup_script" "role" {
     tensor_parallel   = each.value.tp
     # Batch sizing differs by role: the primary/live node (var.node_sku, e.g.
     # 2x RTX PRO 6000) has the larger KV pool; the bake/devel standby (a single
-    # RTX PRO 6000 running Int4) has only ~13.9 GiB.
-    max_num_seqs       = each.value.sku == var.node_sku ? 16 : 10
+    # RTX PRO 6000 running Int4) has only ~13.9 GiB. A role may pin its own.
+    max_num_seqs       = try(each.value.max_seqs, each.value.sku == var.node_sku ? 16 : 10)
     max_batched_tokens = each.value.sku == var.node_sku ? 8192 : 4096
     gpu_memory_util    = each.value.sku == var.node_sku ? "0.92" : "0.90"
   })

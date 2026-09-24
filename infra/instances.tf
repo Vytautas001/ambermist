@@ -62,7 +62,7 @@ resource "verda_instance" "gpu" {
 
     precondition {
       condition     = local.catalog[each.value.sku].vram * 0.92 >= each.value.wt_gb + each.value.kv_gb
-      error_message = "${each.value.sku} has ${local.catalog[each.value.sku].vram} GB VRAM (${format("%.1f", local.catalog[each.value.sku].vram * 0.92)} usable), too little for ${each.value.model}: ${each.value.wt_gb} GB weights + ${each.value.kv_gb} GB KV for 8 sessions at ${each.value.ctx}. Move up local.node_ladder, or switch this role to the Int4 checkpoint."
+      error_message = "${each.value.sku} has ${local.catalog[each.value.sku].vram} GB VRAM (${format("%.1f", local.catalog[each.value.sku].vram * 0.92)} usable), too little for ${each.value.model}: ${each.value.wt_gb} GB weights + ${each.value.kv_gb} GB KV for ${var.sessions} sessions at ${each.value.ctx}. Move up local.node_ladder, or switch this role to the Int4 checkpoint."
     }
   }
 }

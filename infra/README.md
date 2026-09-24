@@ -19,6 +19,7 @@ make preflight     # is the target SKU in stock right now?
 make p0            # pull weights (once)
 make p2            # bake-off nodes
 make p4            # rehearsal + live, held
+make live4         # 4 teams: one RTX PRO 6000 Int4 at 128k, held a week
 make off           # only after the exercise
 make orphans       # OS volumes survive instance deletion — check for strays
 ```
