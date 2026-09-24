@@ -5,12 +5,13 @@
 # re-acquiring it on exercise morning, and the Verda console has already shown
 # that "no availability" is a real state for real SKUs.
 #
-# Two nodes, both serving, router load-balancing across them:
-#   normal      ~156 tok/s per session across 8 teams
-#   one node lost ~78 tok/s per session - degraded, not stopped
+# Two nodes, DIFFERENT families (fleet cap leaves no room for two of the same -
+# see local.fleet_limit / AGENTS.md): 2x RTX PRO 6000 primary at full FP8/128k,
+# 1x H200 standby at Int4/64k. The router fails over, it does not load-balance
+# across them (see router/litellm.config.yaml) - normal operation is full
+# quality on the primary; losing it degrades to the standby's lower context
+# and Int4 quality rather than stopping.
 #
-# Spot is forbidden here and a lifecycle precondition enforces it: both nodes
-# sit in the same pool and would likely be reclaimed together.
-phase             = "p4"
-planned_hours     = 46
-spend_to_date_eur = 35.80
+# Spot is forbidden here and a lifecycle precondition enforces it.
+phase         = "p4"
+planned_hours = 46

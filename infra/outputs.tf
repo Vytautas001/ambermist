@@ -53,23 +53,26 @@ output "mount_commands" {
 }
 
 output "cost" {
-  description = "Cost projection for the applied phase. Fixed costs (weights volume, misc reserve) are counted on every phase, so spend_to_date_eur only ever carries compute + OS storage."
+  description = "Cost projection for the applied phase. Informational only - there is no budget ceiling; nothing here gates an apply. See the `fleet` output for the constraint that does."
   value = {
-    hourly_eur                = format("%.4f", local.hourly_eur)
-    planned_hours             = var.planned_hours
-    phase_compute_eur         = format("%.2f", local.phase_compute_eur)
-    phase_os_storage_eur      = format("%.2f", local.storage_os_eur)
-    phase_total_eur           = format("%.2f", local.phase_total_eur)
-    weights_storage_eur       = format("%.2f", local.storage_weights_eur)
-    misc_reserve_eur          = format("%.2f", var.misc_reserve_eur)
-    spend_to_date_eur         = format("%.2f", var.spend_to_date_eur)
-    projected_total_eur       = format("%.2f", local.projected_eur)
-    budget_eur                = format("%.2f", var.budget_eur)
-    remaining_after_phase_eur = format("%.2f", var.budget_eur - local.projected_eur)
-    provisioned_storage_gib   = local.weights_gib + local.os_gib
-    orphan_risk_eur           = format("%.2f", local.orphan_risk_eur)
-    est_tok_s_per_session     = format("%.0f", local.est_tok_s_per_session)
-    nodes_serving             = local.nodes_serving
+    hourly_eur              = format("%.4f", local.hourly_eur)
+    planned_hours           = var.planned_hours
+    phase_compute_eur       = format("%.2f", local.phase_compute_eur)
+    phase_os_storage_eur    = format("%.2f", local.storage_os_eur)
+    phase_total_eur         = format("%.2f", local.phase_total_eur)
+    weights_storage_eur     = format("%.2f", local.storage_weights_eur)
+    provisioned_storage_gib = local.weights_gib + local.os_gib
+    orphan_risk_eur         = format("%.2f", local.orphan_risk_eur)
+    est_tok_s_per_session   = format("%.0f", local.est_tok_s_per_session)
+    nodes_serving           = local.nodes_serving
+  }
+}
+
+output "fleet" {
+  description = "GPU fleet cap accounting for the applied phase. This is the binding constraint (see terraform_data.fleet_guard); there is no budget ceiling."
+  value = {
+    gpu_counts_by_family = local.fleet_gpu_counts
+    fleet_limit          = local.fleet_limit
   }
 }
 

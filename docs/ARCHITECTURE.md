@@ -1,7 +1,16 @@
 # AI Adversary Simulation Platform — Infrastructure & Model Design
 
+> **Status note (2026-09-24, [ADR 0002](adr/0002-fleet-cap-no-budget.md)):** the
+> €500 budget below and the single-B200/two-identical-node topology it argues
+> for are **historical** — the budget ceiling has been removed and the
+> live topology is now a primary + standby pair on different hardware
+> families under a fixed GPU fleet cap (1x H200 + 1x H100 + 2x RTX PRO 6000).
+> The model choice and KV-cache reasoning below are still current. For what's
+> actually enforced today, read `AGENTS.md`, `docs/CAPACITY-RUNBOOK.md` and
+> `infra/locals.tf` (`local.fleet_limit`), not the cost figures in this file.
+
 **Exercise:** Blue vs. Red cyber defence exercise, 8 defending teams
-**Budget:** €500 hard ceiling (≈ $581 at ECB reference rate 1.1622, 4 Sep 2026)
+**Budget:** €500 hard ceiling (≈ $581 at ECB reference rate 1.1622, 4 Sep 2026) — **removed, see status note above**
 **Runtime:** 40 h preparation + 40 h live
 **Constraints applied:** EU-resident inference only · agentic (high-duty-cycle) workload · 64–128k context per session
 **Prepared:** 15 September 2026

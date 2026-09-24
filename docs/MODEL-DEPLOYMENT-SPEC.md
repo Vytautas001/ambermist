@@ -15,7 +15,10 @@ This specification has **no monetary ceiling and no fixed session limit**.
 Concurrency is an output of capacity testing. Cost reporting is optional metadata,
 not a criterion for the hardware recommendations below. Existing infrastructure
 policy is a separate concern: this documentation change does not edit or bypass
-the current Terraform budget guard.
+the fleet cap in `local.fleet_limit` (`infra/locals.tf`) — never more than
+1x H200 + 1x H100 + 2x RTX PRO 6000 (GPUs) running at once, enforced by
+`terraform_data.fleet_guard`. There is no monetary budget guard any more; the
+fleet cap is what's enforced. See `AGENTS.md`.
 
 Inference remains on Verda in Finland. Keep exercise scope in the system prompt,
 require nonempty authorized networks, and keep harness tools as range-bound stubs.

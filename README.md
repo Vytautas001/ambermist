@@ -1,7 +1,8 @@
 # ambermist
 
 AI adversary-simulation platform for a Blue-vs-Red cyber defence exercise.
-8 Blue Teams · agentic red cell at 64–128k context · EU-resident inference · €500 cap.
+8 Blue Teams · agentic red cell at 64–128k context · EU-resident inference ·
+fixed GPU fleet cap (1x H200 + 1x H100 + 2x RTX PRO 6000), no budget ceiling.
 
 > Full design: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) ·
 > Capacity procedure: [`docs/CAPACITY-RUNBOOK.md`](docs/CAPACITY-RUNBOOK.md)
@@ -15,7 +16,7 @@ measuring comfortable concurrency at 126k input. Capacity figures are provisiona
 
 | Path | What |
 |---|---|
-| `infra/` | Terraform/OpenTofu — the two active-active vLLM nodes, weights volume, phased lifecycle |
+| `infra/` | Terraform/OpenTofu — primary + standby vLLM nodes (different families), weights volume, phased lifecycle, fleet cap guard |
 | `harness/` | `redcell` Python package — the AI adversary: client, agent loop, tools, audit log |
 | `router/` | LiteLLM — per-team keys, per-key concurrency caps, failover across both nodes |
 | `evals/` | P2 model bake-off — Qwen3.5 vs Ling vs Nemotron at 64k and 128k |
@@ -35,7 +36,7 @@ Exercise phases (see `infra/` and the runbook):
 make p0   # pull weights to the persistent volume (once)
 make p1   # 21h  Red Cell builds the harness (this repo's harness/)
 make p2   # 10h  model bake-off (evals/)
-make p4   # 46h  rehearsal + live, two nodes held continuously
+make p4   # 46h  rehearsal + live, primary + standby held continuously
 make off  # only after the exercise; also removes detached redcell OS volumes
 ```
 

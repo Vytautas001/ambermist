@@ -19,14 +19,16 @@ TF_VAR_ARGS = $(if $(location),-var=location=$(location)) \
               $(if $(phase_node_tp),-var=phase_node_tp=$(phase_node_tp)) \
               $(if $(phase_node_spot),-var=phase_node_spot=$(phase_node_spot)) \
               $(if $(node_sku),-var=node_sku=$(node_sku)) \
-              $(if $(node_tp),-var=node_tp=$(node_tp))
+              $(if $(node_tp),-var=node_tp=$(node_tp)) \
+              $(if $(secondary_node_sku),-var=secondary_node_sku=$(secondary_node_sku)) \
+              $(if $(secondary_node_tp),-var=secondary_node_tp=$(secondary_node_tp))
 PREFLIGHT_TARGET_SKU = $(if $(phase_node_sku),$(phase_node_sku),$(node_sku))
 PREFLIGHT_TARGET_TP  = $(if $(phase_node_tp),$(phase_node_tp),$(node_tp))
 PREFLIGHT_ARGS = $(if $(PREFLIGHT_TARGET_SKU),--target-sku $(PREFLIGHT_TARGET_SKU)) \
                  $(if $(PREFLIGHT_TARGET_TP),--target-tp $(PREFLIGHT_TARGET_TP)) \
                  $(if $(location),--target-location $(location))
 
-.PHONY: help init fmt validate $(PHASES) plan-% status cost off orphans reap-orphans clean provision-secrets
+.PHONY: help init fmt validate $(PHASES) plan-% status fleet cost off orphans reap-orphans clean provision-secrets
 
 help:
 	@grep -E '^[a-z0-9-]+:.*?##' $(MAKEFILE_LIST) | sed 's/:.*##/\t/' | column -t -s "$$(printf '\t')"
@@ -87,12 +89,16 @@ apply: check-creds
 provision-secrets: ## securely copy root .env inference credentials to serving nodes
 	@TF="$(TF)" python3 ../ops/provision_node_secrets.py
 
-status: ## show instances and cost projection
+status: ## show instances, fleet cap usage and cost projection
 	@$(TF) output -json instances 2>/dev/null | python3 -m json.tool || echo "no instances"
+	@$(TF) output -json fleet 2>/dev/null | python3 -m json.tool || true
 	@$(TF) output -json cost 2>/dev/null | python3 -m json.tool || true
 	@$(TF) output -raw burn_warning 2>/dev/null && echo
 
-cost: ## cost projection only
+fleet: ## GPU fleet cap usage only (the binding constraint - no budget ceiling)
+	@$(TF) output -json fleet | python3 -m json.tool
+
+cost: ## cost projection only (informational - not a gate)
 	@$(TF) output -json cost | python3 -m json.tool
 
 # ---- safety nets ------------------------------------------------------------

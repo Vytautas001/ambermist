@@ -11,6 +11,5 @@
 #
 # MUST verify: prefix caching on the linear/GDN layers. It is the one finding
 # that would change the primary model choice.
-phase             = "p2"
-planned_hours     = 10
-spend_to_date_eur = 19.68
+phase         = "p2"
+planned_hours = 10

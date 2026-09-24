@@ -14,8 +14,8 @@ resource "verda_ssh_key" "operators" {
 # ---------------------------------------------------------------------------
 # Shared NVMe volume holding the model weights.
 #
-# Type is NVMe_Shared, not NVMe: during phase p4 the B200 primary and the
-# RTX PRO 6000 standby are both up and both need the same checkpoints. A plain
+# Type is NVMe_Shared, not NVMe: during phase p4 the RTX PRO 6000 primary and
+# the H200 standby are both up and both need the same checkpoints. A plain
 # NVMe volume attaches to one instance at a time.
 #
 # size is ForceNew. Growing this volume DESTROYS THE DATA and means re-pulling

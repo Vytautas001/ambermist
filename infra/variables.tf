@@ -15,9 +15,10 @@ variable "phase" {
       off  - no GPUs at all (volume and keys persist).  Use between phases.
       p0   - image bake / weight pull.      1x H200 (on-demand)
       p1   - Red Cell harness development.  1x H200 (on-demand)
-      p2   - model bake-off.                1x B200 (spot)
-      p3   - dress rehearsal.               1x B200 (on-demand)
-      p4   - LIVE exercise.                 1x B200 (on-demand) + 1x RTX PRO 6000 standby
+      p2   - model bake-off.                1x 2xRTX PRO 6000 (spot)
+      p3   - dress rehearsal.               same instances as p4 (see below)
+      p4   - LIVE exercise.                 1x 2xRTX PRO 6000 primary (on-demand)
+                                             + 1x H200 standby (on-demand)
       live4 - LIVE, 4 teams, held a week.   1x RTX PRO 6000 Int4 at 128k (on-demand)
   EOT
   type        = string
@@ -115,7 +116,7 @@ variable "os_volume_size_gb" {
 # ---------------------------------------------------------------------------
 
 variable "primary_model" {
-  description = "HF repo id served on the B200. Must already be present on the weights volume."
+  description = "HF repo id served on the primary node. Must already be present on the weights volume."
   type        = string
   default     = "Qwen/Qwen3.5-122B-A10B-FP8"
 }
@@ -139,7 +140,7 @@ variable "served_model_name" {
 }
 
 variable "primary_max_model_len" {
-  description = "Context window on the B200 primary."
+  description = "Context window on the primary node."
   type        = number
   default     = 131072
 }
@@ -155,14 +156,10 @@ variable "standby_max_model_len" {
 }
 
 # ---------------------------------------------------------------------------
-# Budget guard
+# There is no monetary budget ceiling. The binding constraint is the GPU fleet
+# cap below (see local.fleet_limit / terraform_data.fleet_guard) — never more
+# than 1x H200 + 1x H100 + 2x RTX PRO 6000 (GPUs) running at once.
 # ---------------------------------------------------------------------------
-
-variable "budget_eur" {
-  description = "Hard ceiling for the whole exercise, in EUR."
-  type        = number
-  default     = 500
-}
 
 variable "storage_eur_per_gib_month" {
   description = "Verda block-volume price. The console quotes EUR directly, so no FX conversion is involved."
@@ -178,25 +175,51 @@ variable "active_params_b" {
 
 variable "node_sku" {
   description = <<-EOT
-    Verda instance type for each serving node. Default is 2x RTX PRO 6000 (192GB,
-    TP=2): the most-available SKU in the catalogue and the cheapest that holds the
-    FP8 checkpoint plus its KV cache.
+    Verda instance type for the primary serving node. Default is 2x RTX PRO 6000
+    (192GB, TP=2): the most-available SKU in the catalogue and the one that holds
+    the FP8 checkpoint plus its KV cache with the most headroom.
 
-    If `make preflight` reports this out of stock, move DOWN local.node_ladder and
-    set node_sku/node_tp together. B200 is deliberately not in the ladder.
+    Must be a SKU whose family/gpus fit within local.fleet_limit (1x H200, 1x H100,
+    2x RTX PRO 6000 GPUs total, across node_sku + secondary_node_sku combined) -
+    terraform_data.fleet_guard refuses an apply that doesn't. If `make preflight`
+    reports this out of stock, move DOWN local.node_ladder and set node_sku/node_tp
+    together. B200/B300/GB300 are deliberately not in the ladder - see AGENTS.md.
   EOT
   type        = string
   default     = "2RTXPRO6000.60V"
 }
 
 variable "node_tp" {
-  description = "--tensor-parallel-size for each node. MUST match the GPU count in node_sku."
+  description = "--tensor-parallel-size for the primary node. MUST match the GPU count in node_sku."
   type        = number
   default     = 2
 
   validation {
     condition     = contains([1, 2, 4, 8], var.node_tp)
     error_message = "node_tp must be 1, 2, 4 or 8 - vLLM requires a power of two."
+  }
+}
+
+variable "secondary_node_sku" {
+  description = <<-EOT
+    Verda instance type for p4's second (standby) node. Default is 1x H200: with
+    node_sku's default of 2x RTX PRO 6000, that's 2 RTX GPUs + 1 H200 GPU, which
+    fits local.fleet_limit exactly and leaves the H100 free for p0/p1/live4/degraded
+    mode. Runs standby_model/standby_max_model_len, not the primary FP8 checkpoint -
+    a single H200 (141GB) cannot hold 125GB FP8 weights plus KV at full context.
+  EOT
+  type        = string
+  default     = "1H200.141S.44V"
+}
+
+variable "secondary_node_tp" {
+  description = "--tensor-parallel-size for the secondary node. MUST match the GPU count in secondary_node_sku."
+  type        = number
+  default     = 1
+
+  validation {
+    condition     = contains([1, 2, 4, 8], var.secondary_node_tp)
+    error_message = "secondary_node_tp must be 1, 2, 4 or 8 - vLLM requires a power of two."
   }
 }
 
@@ -223,34 +246,18 @@ variable "phase_node_spot" {
   default     = false
 }
 
-variable "spend_to_date_eur" {
-  description = <<-EOT
-    EUR already spent in previous phases. Update this after each phase from the
-    Verda billing console. The budget precondition uses it to refuse an apply that
-    would breach the ceiling.
-  EOT
-  type        = number
-  default     = 0
-}
-
 variable "volume_retention_days" {
   description = <<-EOT
     How long the weights volume exists across the whole engagement. Storage bills
-    by wall-clock time, not GPU-hours, so this is charged in full against the
-    budget on every phase rather than prorated.
+    by wall-clock time, not GPU-hours, so the informational cost output charges it
+    in full on every phase rather than prorating.
   EOT
   type        = number
   default     = 21
 }
 
-variable "misc_reserve_eur" {
-  description = "Flat reserve for egress, snapshots and the router VM."
-  type        = number
-  default     = 12.91 # ~$15
-}
-
 variable "planned_hours" {
-  description = "Planned billed hours for the phase being applied. Used by the budget guard."
+  description = "Planned billed hours for the phase being applied. Informational only - feeds the `cost` output, not a gate."
   type        = number
   default     = 1
 }

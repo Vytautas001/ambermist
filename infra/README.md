@@ -1,8 +1,11 @@
 # infra — Terraform / OpenTofu
 
-The exercise's inference infrastructure on Verda: two active-active vLLM nodes,
-a persistent weights volume, and a phased lifecycle that holds capacity through
-rehearsal into the live exercise.
+The exercise's inference infrastructure on Verda: a primary + standby vLLM node
+pair (different hardware families, so failover — not equal load-balancing — see
+`../router/litellm.config.yaml`), a persistent weights volume, and a phased
+lifecycle that holds capacity through rehearsal into the live exercise, all
+capped at a fixed GPU fleet: never more than 1x H200 + 1x H100 + 2x RTX PRO 6000
+(GPUs). There is no monetary budget ceiling.
 
 See the repo root for the full picture:
 - `../docs/ARCHITECTURE.md` — the design and the reasoning
@@ -24,7 +27,7 @@ make off           # only after the exercise
 make orphans       # OS volumes survive instance deletion — check for strays
 ```
 
-Provider gotchas, the phase model and the budget guard are documented in
+Provider gotchas, the phase model and the fleet guard are documented in
 `../docs/` and enforced by preconditions in `instances.tf`.
 
 ## P1 serving checks

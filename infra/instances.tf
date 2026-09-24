@@ -97,30 +97,34 @@ resource "verda_volume_attachment" "weights" {
 }
 
 # ---------------------------------------------------------------------------
-# Budget guard. Refuses the apply if this phase would breach the ceiling.
+# Fleet guard. There is no monetary budget ceiling. Instead this refuses an
+# apply that would run more GPUs of a family than the fleet allows - never
+# more than 1x H200 + 1x H100 + 2x RTX PRO 6000 (GPUs) at once, and never any
+# family outside that allowlist (B200/B300/GB300/A100/L40S all count as
+# "blocked", limit 0). See local.fleet_limit and AGENTS.md.
 # ---------------------------------------------------------------------------
-resource "terraform_data" "budget_guard" {
+resource "terraform_data" "fleet_guard" {
   input = {
-    phase             = var.phase
-    hourly_eur        = local.hourly_eur
-    planned_hours     = var.planned_hours
-    phase_total_eur   = local.phase_total_eur
-    spend_to_date_eur = var.spend_to_date_eur
-    projected_eur     = local.projected_eur
+    phase       = var.phase
+    gpu_counts  = local.fleet_gpu_counts
+    fleet_limit = local.fleet_limit
   }
 
   lifecycle {
     precondition {
-      condition     = local.projected_eur <= var.budget_eur
+      condition = alltrue([
+        for fam, limit in local.fleet_limit : local.fleet_gpu_counts[fam] <= limit
+      ])
       error_message = <<-EOT
-        BUDGET BREACH — apply refused.
+        FLEET CAP EXCEEDED — apply refused.
 
-        Phase ${var.phase} at ${var.planned_hours} h would cost EUR ${format("%.2f", local.phase_total_eur)}
-        on top of EUR ${format("%.2f", var.spend_to_date_eur)} already spent, for a projected
-        total of EUR ${format("%.2f", local.projected_eur)} against a ceiling of EUR ${format("%.2f", var.budget_eur)}.
+        Phase ${var.phase} would run ${jsonencode(local.fleet_gpu_counts)} GPUs
+        against the hard fleet ceiling ${jsonencode(local.fleet_limit)} (1x H200 +
+        1x H100 + 2x RTX PRO 6000 GPUs, nothing else). This is a hardware policy,
+        not a cost one - there is no budget override for it.
 
-        Either reduce planned_hours, move the phase to spot, or raise budget_eur
-        deliberately. Do not raise spend_to_date_eur to make this pass.
+        Reduce node_sku/node_tp or secondary_node_sku/secondary_node_tp to a
+        combination that fits, or drop a node. See docs/CAPACITY-RUNBOOK.md.
       EOT
     }
   }

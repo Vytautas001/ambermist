@@ -2,6 +2,14 @@
 """
 Capacity preflight for the Verda exercise infrastructure.
 
+There is no monetary budget ceiling. The binding constraint is a hard GPU
+fleet cap - never more than 1x H200 + 1x H100 + 2x RTX PRO 6000 (GPUs) running
+at once, and no hardware outside that allowlist (B200/B300/GB300, A100, L40S,
+or any multi-GPU H200/H100/RTX PRO 6000 SKU that alone exceeds its family's
+cap) - see local.fleet_limit in infra/locals.tf and AGENTS.md. This script
+checks availability only for SKUs that fit inside that cap; anything else is
+out of policy regardless of what Verda shows in stock.
+
 The deploy console showed B200, B300, GB300, L40S, A100-40GB and RTX A6000 as
 "No availability". Verda checks capacity at deploy time and returns HTTP 503
 against an exhausted pool, so the only question worth asking before an apply is:
@@ -25,15 +33,26 @@ import argparse, datetime, json, os, sys, time, urllib.request, urllib.error
 API = os.environ.get("VERDA_API", "https://api.verda.com/v1")
 
 # sku, tensor-parallel size, VRAM GB, EUR/h, note
+# Every rung here fits its family's fleet cap on its own (1x H200, 1x H100,
+# 2x RTX PRO 6000 GPUs). Only the primary node picks from this ladder; the
+# secondary (standby) node in p4 uses a DIFFERENT family, since a same-family
+# second node would exceed the cap - see infra/locals.tf phases.p4.
 LADDER = [
-    ("2RTXPRO6000.60V",  2, 192, 3.170, "design target, TP=2 over PCIe"),
-    ("2H200.141S.88V",   2, 282, 7.456, "faster, NVLink, 2.4x the price"),
-    ("4RTXPRO6000.120V", 4, 384, 6.340, "more VRAM, TP=4 PCIe scaling is worse"),
-    ("1H200.141S.44V",   1, 141, 3.728, "TP=1 - Int4 or gpt-oss ONLY, FP8 will not fit"),
+    ("2RTXPRO6000.60V", 2, 192, 3.170, "design target, TP=2 over PCIe, holds full FP8"),
+    ("1H200.141S.44V",  1, 141, 3.728, "TP=1 - Int4 or gpt-oss ONLY, FP8 will not fit"),
+    ("1H100.80S.30V",   1, 80,  2.841, "TP=1 - tightest fit, Int4 or gpt-oss ONLY"),
 ]
 
-# Anything here is known-unavailable and must never be planned on.
+# Known-unavailable at Verda - must never be planned on regardless of policy.
 BLOCKED = {"1B200.30V", "1B300.30V", "1GB300.32V", "1L40S.20V", "1A100.40S.22V"}
+
+# In stock at times, but OUT OF POLICY: exceeds the fleet cap for its family,
+# or is a family outside the allowlist entirely (A100). Never plan on these
+# even if Verda shows them available - see local.fleet_limit.
+OVER_FLEET_CAP = {
+    "2H200.141S.88V", "4RTXPRO6000.120V", "2H100.80S.80V", "4H100.80S.176V",
+    "1A100.22V", "4A100.88V",
+}
 
 
 def get_token(timeout=20):
@@ -133,10 +152,16 @@ def report(rungs, best, by_loc, as_json, target_sku=None, target_tp=None,
             where = ",".join(r["locations"]) or "-"
             sku, vram, eur = r["sku"], r["vram_gb"], r["eur_per_hour"]
             print(f"  {mark:12} {sku:20} {vram:4}GB  EUR {eur:6.3f}/h  [{where}]  {r['note']}")
-        blocked_seen = sorted({s for types in by_loc.values() for s in types} & BLOCKED)
+        seen = {s for types in by_loc.values() for s in types}
+        blocked_seen = sorted(seen & BLOCKED)
         if blocked_seen:
             print(f"\n  NOTE: {', '.join(blocked_seen)} is back in stock. It was")
             print("  unavailable when this was designed - re-check before relying on it.")
+        over_cap_seen = sorted(seen & OVER_FLEET_CAP)
+        if over_cap_seen:
+            print(f"\n  NOTE: {', '.join(over_cap_seen)} is in stock but OUT OF POLICY -")
+            print("  it would exceed the fleet cap (1x H200 + 1x H100 + 2x RTX PRO 6000")
+            print("  GPUs). Do not plan on it. See AGENTS.md.")
         print()
         if best is None:
             print("  *** NO RUNG OF THE LADDER IS AVAILABLE ***")

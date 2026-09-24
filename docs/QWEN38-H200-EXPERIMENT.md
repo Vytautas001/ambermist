@@ -22,10 +22,13 @@ licensing rationale remain in
 [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 Before starting, confirm the **actual Verda project balance is positive** in
-the console. Terraform's projected remaining budget is separate from provider
-account funds; with a zero balance Verda can discontinue the instance and move
+the console. With a zero balance Verda can discontinue the instance and move
 attached volumes to trash. Trashed volumes are recoverable for 96 hours, and
 restoring them charges the project balance ([Verda storage recovery rules](https://docs.verda.com/storage/deleting-storage/)).
+There is no Terraform budget ceiling to check against; the repository's
+binding constraint is the GPU fleet cap (`local.fleet_limit` in
+`infra/locals.tf`) — confirm this test's H200 usage fits inside it, alongside
+whatever else is already running, with `make fleet` (or the `fleet` output).
 
 ## 1. Check the node before making changes
 
@@ -240,6 +243,7 @@ prompt and output token counts, TTFT, duration, generation rate, errors, and
 peak GPU and host RAM use. Keep the result files free of credentials.
 
 The estimated H200 rate is €3.728/hour. Four additional hours cost about
-€14.91 before storage. Check remaining funds before extending the test; do not
-change or bypass the repository's €500 budget guard. The running instance
-continues to incur charges during the experiment.
+€14.91 before storage. There is no budget ceiling to check against, but do not
+change or bypass `terraform_data.fleet_guard` (`infra/instances.tf`) — the
+repository's fleet cap. The running instance continues to incur charges
+during the experiment.

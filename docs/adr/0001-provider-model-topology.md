@@ -2,6 +2,13 @@
 
 Status: accepted · Date: 2026-09-18
 
+> **Superseded in part by [ADR 0002](0002-fleet-cap-no-budget.md) (2026-09-24):**
+> the €500 budget ceiling (decision context, consequence 1) is removed, and the
+> topology (decision 3) is no longer two identical RTX PRO 6000 nodes — it's a
+> primary + standby pair on different hardware families under a fixed fleet cap.
+> Kept as-is below for the historical record; do not treat the budget or
+> two-identical-nodes topology as current.
+
 ## Context
 8 Blue Teams, agentic red cell at 64–128k context, EU-resident inference, €500 cap,
 short-lived exercise. Live capacity is scarce: Verda showed B200 out of stock.

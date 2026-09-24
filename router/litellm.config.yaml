@@ -1,8 +1,18 @@
 # LiteLLM router for the exercise.
 #
-# Two jobs: (1) load-balance across the two active-active vLLM nodes so losing
-# one degrades rather than stops; (2) enforce PER-TEAM fairness — vLLM's own
-# scheduler is FCFS and will let one runaway agent loop starve the others.
+# Two jobs: (1) fail over from the primary to the standby vLLM node so losing
+# the primary degrades rather than stops; (2) enforce PER-TEAM fairness —
+# vLLM's own scheduler is FCFS and will let one runaway agent loop starve the
+# others.
+#
+# NOT equal load-balancing. The fleet cap (1x H200 + 1x H100 + 2x RTX PRO 6000
+# GPUs — see AGENTS.md, docs/CAPACITY-RUNBOOK.md) forces primary and standby
+# onto different hardware families, so they are not interchangeable: node B
+# runs standby_model at standby_max_model_len (Int4, halved context — see
+# infra/variables.tf). Routing both under one model_name with least-busy would
+# silently hand some teams a lower-context, lower-quality session under normal
+# load. Instead node B is a `fallbacks` target: node A takes all traffic while
+# healthy, node B only engages after node A's health check fails.
 #
 # Start:  litellm --config litellm.config.yaml
 # Env:    NODE_A_URL, NODE_B_URL, LITELLM_MASTER_KEY, LITELLM_DB (optional)
@@ -13,19 +23,20 @@ model_list:
       model: hosted_vllm/redcell-adversary
       api_base: os.environ/NODE_A_URL      # e.g. http://10.20.255.1:8000/v1
       api_key: os.environ/VLLM_API_KEY
-  - model_name: redcell-adversary          # same public name = transparent failover + LB
+  - model_name: redcell-adversary-standby  # distinct name: fallback target only, never LB'd in
     litellm_params:
       model: hosted_vllm/redcell-adversary
       api_base: os.environ/NODE_B_URL
       api_key: os.environ/VLLM_API_KEY
 
 router_settings:
-  routing_strategy: least-busy             # spread 8 teams across both nodes
+  fallbacks:
+    - redcell-adversary: ["redcell-adversary-standby"]
   num_retries: 2
   timeout: 300                             # long agentic turns
   allowed_fails: 3
   cooldown_time: 60
-  health_check_interval: 15                # fail a dead node out within ~15s
+  health_check_interval: 15                # fail node A out to the standby within ~15s
 
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY

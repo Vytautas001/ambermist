@@ -17,6 +17,3 @@ image = "24.04.cuda12.9.docker"
 
 weights_volume_size_gb = 400
 os_volume_size_gb      = 100
-
-budget_eur   = 500
-eur_usd_rate = 1.1622

@@ -2,22 +2,60 @@
 
 AI adversary-simulation platform for a Blue-vs-Red cyber defence exercise:
 8 defending teams, an AI red cell running agentic sessions at 64–128k context,
-EU-resident inference, hard €500 budget.
+EU-resident inference on a fixed, capped GPU fleet.
 
 ## Hard constraints — do not silently violate these
-- **Budget: €500.** `infra/` has a `terraform_data.budget_guard` precondition that
-  refuses an over-budget apply. Don't route around it; if a change needs more, say so.
+- **No monetary budget limit.** The former €500 ceiling is removed. The binding
+  limit is the hardware fleet below: never provision more machines, larger SKUs,
+  or other GPU types than it lists. If a change needs more, say so.
 - **EU-resident inference.** Provider is Verda (Finland). Don't introduce a US-region
   default. State state (Terraform backend) is deliberately still local — see the ADR.
-- **Capacity is the live risk.** B200 was out of stock, so the design runs on the
-  most-available SKU (2× RTX PRO 6000) and holds it. `ops/preflight.py` gates applies.
-  Read `docs/CAPACITY-RUNBOOK.md` before touching topology.
+- **Capacity is the live risk.** Acquire the fleet early and hold it.
+  `ops/preflight.py` gates applies. Read `docs/CAPACITY-RUNBOOK.md` before
+  touching topology.
 - **The harness is orchestration, not weaponisation.** `harness/src/redcell/tools/`
   are range-bound stubs by design. Keep them that way — no real offensive tooling
   lands in this repo. The recon stubs must never fabricate results.
 - **Scope is mandatory.** `ExerciseConfig` rejects an empty `in_scope_networks`. The
   adversary system prompt carries scope + authorisation; per-turn injects stay clean
   (per-turn authorisation measurably increases refusals).
+
+## GPU fleet and concurrent-session limits
+Only H200, H100 and RTX PRO 6000 are allowed; nothing above H200 (B200, B300,
+GB300), nothing outside these three families (A100, L40S, ...) either. The
+fleet maximum at any one time — enforced by `terraform_data.fleet_guard` in
+`infra/instances.tf` against `local.fleet_limit` in `infra/locals.tf`:
+
+| Machine | Verda SKU | Count | VRAM | Max concurrent sessions |
+|---|---|---:|---:|---:|
+| H200 | `1H200.141S.44V` | 1 | 141 GB | 4 |
+| H100 | `1H100.80S.30V` | 1 | 80 GB | 1 |
+| RTX PRO 6000 | `1RTXPRO6000.30V` ×2, or one `2RTXPRO6000.60V` | 2 GPUs | 2 × 96 GB | 4 (2 per GPU) |
+| **Fleet total** | | | | **9** |
+
+A session is one actively generating conversation with its full context
+resident: 131,072 tokens per slot (129,024 input + 2,048 output), per
+`docs/MODEL-DEPLOYMENT-SPEC.md`. The session-count limits are the provisional
+starting targets from that spec, not qualified capacity — change them only
+with results from `evals/model_capacity.py`.
+
+Because the fleet cap leaves no room for two same-family nodes, the live P4
+topology is a primary (2x RTX PRO 6000, full FP8) + standby (1x H200, Int4,
+halved context) pair, not two identical nodes — see `phases.p4` in
+`infra/locals.tf` and `router/litellm.config.yaml` (fails over, does not
+load-balance across them, since they're not equivalent capacity).
+
+Implemented as config, not hard-coded in application code:
+- `infra/locals.tf` (`local.catalog` family/gpus fields, `local.fleet_limit`,
+  `local.fleet_gpu_counts`) is the one source of truth for the fleet cap.
+- `terraform_data.fleet_guard` (`infra/instances.tf`) refuses an apply that
+  exceeds it, replacing the old `terraform_data.budget_guard`.
+- `ops/preflight.py` checks only fleet-fitting SKUs and flags anything in
+  stock but out of policy (`OVER_FLEET_CAP`).
+- Session limits belong in the serving layer (llama.cpp `--parallel`, vLLM
+  `--max-num-seqs`) and the router (`general_settings.max_parallel_requests`
+  per deployment in `router/litellm.config.yaml`) — never allocate more slots
+  than a node's limit, and never silently truncate context to fit more in.
 
 ## Layout
 - `infra/` — Terraform/OpenTofu root module. `make preflight`, `make p0..p4`, `make off`.

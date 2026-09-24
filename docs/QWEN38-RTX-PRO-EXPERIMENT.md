@@ -25,10 +25,14 @@ licensing rationale remain in
 [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 Before starting, confirm the **actual Verda project balance is positive** in
-the console. Terraform's projected remaining budget is separate from provider
-account funds; with a zero balance Verda can discontinue the instance and move
+the console. With a zero balance Verda can discontinue the instance and move
 attached volumes to trash. Trashed volumes are recoverable for 96 hours, and
 restoring them charges the project balance ([Verda storage recovery rules](https://docs.verda.com/storage/deleting-storage/)).
+There is no Terraform budget ceiling to check against; the repository's
+binding constraint is the GPU fleet cap (`local.fleet_limit` in
+`infra/locals.tf`) — this test's single `1RTXPRO6000.30V` fits inside it
+alongside whatever else is already running, but confirm with `make fleet`
+(or the `fleet` output) before applying.
 
 ## 1. Select and check the test node
 
@@ -38,14 +42,12 @@ They select one on-demand `1RTXPRO6000.30V` with tensor parallelism 1 for the
 existing p0 development phase. They do not change global node defaults or the
 p0/p1 phase files. Before applying, inspect the current Terraform phase and
 plan: the shared p0/p1 development node has a destroy guard, so an existing
-development instance cannot be silently replaced in place. Use the normal
-budget guard with the latest actual spend-to-date value. The test budget below
-assumes four GPU hours at the listed on-demand rate; adjust planned hours to
-the actual window.
+development instance cannot be silently replaced in place. The test cost
+below assumes four GPU hours at the listed on-demand rate; adjust
+`planned_hours` (informational only, not a gate) to the actual window.
 
 From `infra/`, load repository-root credentials without printing them, run
-capacity preflight, and review the plan. Replace `ACTUAL_SPEND_EUR` with the
-current amount from the Verda billing console:
+capacity preflight, and review the plan:
 
 ```bash
 set -a
@@ -58,14 +60,13 @@ python3 ../ops/preflight.py \
   --target-location FIN-03
 tofu plan \
   -var-file=phases/p0-bake.tfvars \
-  -var-file=experiments/qwen38-rtx-test.tfvars \
-  -var=spend_to_date_eur=ACTUAL_SPEND_EUR
+  -var-file=experiments/qwen38-rtx-test.tfvars
 ```
 
 Apply only if preflight finds capacity and the plan uses the intended phase,
-SKU, duration, and current spend. The same var-file arguments and actual spend
-must be passed to `tofu apply`. Do not use zero to make a plan pass or continue
-if the budget guard rejects the projection.
+SKU and duration. The same var-file arguments must be passed to `tofu apply`.
+Do not continue if `terraform_data.fleet_guard`'s precondition rejects the
+plan — that means this SKU would push some family over the fleet cap.
 
 Connect to the resulting test node and capture a baseline:
 
@@ -281,7 +282,8 @@ prompt and output token counts, TTFT, duration, generation rate, errors, and
 peak GPU and host RAM use. Keep the result files free of credentials.
 
 The listed on-demand rate for `1RTXPRO6000.30V` is €1.585/hour. Four GPU
-hours cost about €6.34 before storage. Check the actual rate and remaining
-budget before extending the test; do not change or bypass the repository's
-€500 budget guard. The running instance continues to incur charges during the
-experiment.
+hours cost about €6.34 before storage. There is no budget ceiling to check
+against, but check the actual rate before extending the test, and do not
+change or bypass `terraform_data.fleet_guard` (`infra/instances.tf`) — the
+repository's fleet cap. The running instance continues to incur charges
+during the experiment.
