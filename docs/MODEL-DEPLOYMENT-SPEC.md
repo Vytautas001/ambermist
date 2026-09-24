@@ -1,24 +1,25 @@
 # Portable model deployment: Qwen3.8 Flash Next Abliterated
 
-Status: implementation specification; capacity estimates are unverified.
-Date: 2026-09-24.
+Status: selected target implementation specification; coding and qualification pending.
+Date: 2026-09-24. See [ADR 0003](adr/0003-qwen38-gguf-fleet-serving.md) and the
+[implementation handoff](IMPLEMENTATION-HANDOFF.md).
 
 ## 1. Outcome and scope
 
-Deploy `windowsxp811203/Qwen3.8-Flash-Next-Abliterated-GGUF` on one H200,
-H100, or RTX PRO 6000 Blackwell, and discover how many simultaneous long-context
-sessions each configuration can serve comfortably. Reuse the deployment mechanism
-for subsequent models through explicit model, runtime, hardware, and workload
-profiles.
+Implement deployment of `windowsxp811203/Qwen3.8-Flash-Next-Abliterated-GGUF`
+on independently qualified H200, H100, and RTX PRO 6000 Blackwell replicas.
+Measure comfortable long-context concurrency within the current session policy,
+then rehearse combined service for eight Blue Teams. Reuse the mechanism for
+subsequent models through explicit model, runtime, hardware, and workload profiles.
 
-This specification has **no monetary ceiling and no fixed session limit**.
-Concurrency is an output of capacity testing. Cost reporting is optional metadata,
-not a criterion for the hardware recommendations below. Existing infrastructure
-policy is a separate concern: this documentation change does not edit or bypass
-the fleet cap in `local.fleet_limit` (`infra/locals.tf`) — never more than
-1x H200 + 1x H100 + 2x RTX PRO 6000 (GPUs) running at once, enforced by
-`terraform_data.fleet_guard`. There is no monetary budget guard any more; the
-fleet cap is what's enforced. See `AGENTS.md`.
+There is **no monetary ceiling**. The hard fleet cap remains **one H200, one H100,
+and two RTX PRO 6000 GPUs**; no other families or larger allocations. Preserve
+`local.fleet_limit` and `terraform_data.fleet_guard` and reconcile actual held
+inventory before acquisitions. Session ceilings are provisionally **4 on H200,
+1 on H100, and 2 per RTX GPU**. They are policy bounds, not measured capacity.
+This spec replaces the earlier unrestricted-concurrency proposal. Raising a bound
+requires an explicit session-policy revision and subsequent qualification; it is
+outside the current implementation scope. See [AGENTS.md](../AGENTS.md).
 
 Inference remains on Verda in Finland. Keep exercise scope in the system prompt,
 require nonempty authorized networks, and keep harness tools as range-bound stubs.
@@ -44,56 +45,66 @@ SKU and nominal VRAM values come from [the repository catalog](../infra/locals.t
 Actual availability, VRAM, host RAM, driver, CPU allocation, and storage must be
 queried for each deployment. The suffix in a SKU is not a host-memory guarantee.
 
-| Hardware | Verda SKU | Nominal VRAM | CUDA build target | First concurrency target | Next candidates if successful |
-|---|---|---:|---:|---:|---|
-| H200 | `1H200.141S.44V` | 141 GB | 90 | 4 | 6, 8, then higher |
-| H100 | `1H100.80S.30V` | 80 GB | 90 | 1 | 2, then higher if memory permits |
-| RTX PRO 6000 Blackwell | `1RTXPRO6000.30V` | 96 GB | 120 | 2 | 3, 4, then higher |
+| Hardware | Verda SKU | Nominal VRAM | CUDA build target | Trial sequence | Policy ceiling |
+|---|---|---:|---:|---|---:|
+| H200 | `1H200.141S.44V` | 141 GB | 90 | 1, 2, 3, 4 | 4 |
+| H100 | `1H100.80S.30V` | 80 GB | 90 | 1 | 1 |
+| RTX PRO 6000 Blackwell | `1RTXPRO6000.30V` | 96 GB | 120 | 1, 2 per GPU | 2 per GPU |
 
-**These are provisional starting targets, not measured comfortable capacities.**
+**These are provisional ceilings, not measured comfortable capacities.**
 Start every hardware qualification at one session before advancing. The H100 is
 the tightest fit and may require additional offload even for one slot. A failed
 single-session latency test can make any candidate unsuitable. There is no
 evidence yet to promise 4, 1, or 2 comfortable sessions respectively.
 
-H200 is the preferred first qualification machine because it is already held and
-has the most memory. RTX has more memory than this H100 SKU, so it may hold more
-sessions despite different decode performance. Memory alone cannot rank latency.
+H200 is the preferred first qualification machine because repository records
+describe a held H200 and it has the most memory. Confirm current inventory before
+acting; this specification is not a live-state inspection. RTX has more memory
+than this H100 SKU, so it may hold more sessions despite different decode
+performance. Memory alone cannot rank latency.
 NVIDIA lists H100/H200 at compute capability 9.0 and RTX PRO Blackwell at 12.0;
 use a toolkit and driver supporting the selected target, or publish separate
 runtime images per architecture. [NVIDIA hardware reference](https://developer.nvidia.com/cuda/gpus)
 
-For each host, provision at least 128 GiB system RAM as an initial design target,
-prefer 192–256 GiB for larger concurrency trials, and require at least 80 GiB
-available before the initial CPU-embedding experiment. These are provisional
-reservations, not verified model requirements. Increase them if measured peak
+For each allowed host, check for at least 128 GiB system RAM as an initial design
+target, preferably 192–256 GiB, and at least 80 GiB available before the initial
+CPU-embedding experiment. If the allowed SKU lacks required RAM, report the
+profile infeasible; these targets do not authorize a larger machine. These are
+provisional reservations, not verified model requirements. Increase them if measured peak
 memory, checkpoint copies, or page residency requires it. Allow 140 GB free on the
 weights volume for this artifact, plus runtime/build space and the retained
 rollback model. Evaluate disk capacity in bytes before downloading.
 
 ## 3. Artifact and runtime
 
-Use the same Q4_K_M artifact across all three machines:
+Use the same Q4_K_M artifact across all three GPU types and every replica:
 
 ```yaml
 repository: windowsxp811203/Qwen3.8-Flash-Next-Abliterated-GGUF
-revision_reference: c3365c4
+revision: c3365c410baa29bdd3d7cc8cbc2bf9bee0de2f3a
 file: Qwen3.8-Flash-Next-Abliterated-Q4_K_M.gguf
+size_bytes: 119150722112
 sha256: 324c85132e04654480ac93923f444b760b2950eb8c84a346dd0ec70e680ecde2
 format: gguf
 quantization: Q4_K_M
 ```
 
-Resolve the revision reference to its full commit in the deployment lock file.
-The publisher lists approximately 119 GB / 111 GiB for this artifact and describes
-a corrected sparse-attention metadata upload. Its weights alone exceed the H100
+The full revision, file size (119.15 GB / 110.97 GiB), and LFS SHA-256 were
+verified against [publisher metadata](https://huggingface.co/api/models/windowsxp811203/Qwen3.8-Flash-Next-Abliterated-GGUF/revision/c3365c410baa29bdd3d7cc8cbc2bf9bee0de2f3a?blobs=true)
+on 2026-09-24; weight bytes were not downloaded by this documentation review.
+The publisher records a corrected sparse-attention metadata upload. Verify the
+checksum and `qwen4exp.attention.compress_ratios` (4 at each full-attention layer,
+0 at the others) before qualification. Its weights alone exceed the H100
 and RTX VRAM. Q4 conversion quality and this exact artifact's long-context
-behaviour need evaluation. Record the inherited license with the artifact.
+behaviour need evaluation. Record Qwen Community License 1.0 with the artifact
+and assess its applicability to the organiser/participant arrangement before participant service; the old
+Apache-only rationale no longer applies. See the
+[upstream license](https://huggingface.co/Qwen/Qwen3.8-Flash-Next/blob/main/LICENSE).
 [Checkpoint source](https://huggingface.co/windowsxp811203/Qwen3.8-Flash-Next-Abliterated-GGUF)
 
 Use llama.cpp with CUDA as the initial runtime. Architecture support was merged
-upstream; the older experiment documents' assertion that only an open PR can load
-it is stale. Select an immutable upstream commit containing that support and the
+upstream; the publisher's older assertion that only an open PR can load it is
+stale. Select an immutable upstream commit containing that support and the
 required flags, build it, then lock the container digest, CUDA version, compiler,
 and source commit. Do not launch from a moving PR head or `latest` tag. Actual
 loading of the pinned GGUF remains a qualification gate.
@@ -139,15 +150,17 @@ Using nominal GB converted conservatively to GiB gives:
 
 | Hardware | Illustrative memory-only slot range | Interpretation |
 |---|---:|---|
-| H200 | 8–14 | Latency may become limiting much earlier; begin qualification at 4 |
+| H200 | 8–14 | Memory sensitivity only; trial 1 through policy ceiling 4 |
 | H100 | 0–1 | Fit depends strongly on actual placement; begin at 1 only after memory checks |
-| RTX PRO 6000 | 2–5 | Begin at 2; validate decode and prefill contention before raising |
+| RTX PRO 6000 | 2–5 | Memory sensitivity only; trial 1 then ceiling 2 |
 
-These ranges are calculated scenarios, not model benchmarks or hard maximums.
+These ranges are calculated scenarios, not model benchmarks, permitted session
+counts, or physical maximums. They do not override the 4/1/2 policy ceilings.
 The assumed weight split and per-slot allowance must be replaced with measured
 values. GPU-reported memory may differ from the nominal conversion. Context
-checkpoint growth can exceed this allowance. Measure at N=1 and N=2, then at
-each next N; use the worst measured incremental allocation and prefill peak.
+checkpoint growth can exceed this allowance. Measure N=1, then each further N
+allowed by the policy ceiling; use the worst measured incremental allocation and
+prefill peak. Do not run N=2 on H100 under its current one-slot policy.
 
 H100 fallbacks, in order: reduce prefill microbatch; evaluate Q8 cache if the
 pinned implementation supports it; move explicitly selected additional tensors
@@ -156,9 +169,11 @@ Q8 reduces cache bytes, not weight bytes, and does not imply a twofold increase
 in comfortable sessions. Expert offload can hurt latency significantly.
 
 For H200, also compare keeping the PLE table on GPU if measured capacity allows;
-that is a different capacity profile. For higher demand, add independently
-qualified replicas and route sessions consistently. Do not assume linear scaling
-or equivalent cache behaviour from tensor parallelism across multiple GPUs.
+that is a different capacity profile. For fleet service, use only the
+allowed independent replicas: one H200, one H100, and two RTX GPUs. Prefer two
+single-RTX hosts; a dual-RTX host may run two GPU-isolated processes after combined
+RAM/bandwidth qualification. Do not add hardware beyond the cap or assume pooled
+VRAM, linear scaling, or equivalent cache behavior from tensor parallelism.
 
 ## 5. Definition of comfortable service
 
@@ -180,10 +195,12 @@ first answer content and total time to final answer. A stream producing only
 reasoning does not pass correctness. Short early-EOS answers cannot establish
 steady generation speed: include tasks producing at least 512 completion tokens.
 
-`N_comfortable` is the largest tested N passing all targets at 126k input,
-including concurrent prefill and repeated follow-ups. Report `N_memory`,
-`N_comfortable`, and tested failures separately. The router's admission limit
-comes from `N_comfortable`; a memory estimate cannot promote a profile to ready.
+`N_comfortable` is the largest tested N within the policy ceiling passing all
+targets at 126k input, including concurrent prefill and repeated follow-ups.
+Report `N_memory`, `N_comfortable`, the policy ceiling, and tested failures
+separately. Admission is `min(policy_ceiling, N_comfortable)` for the exact
+qualified profile. A passing ceiling is a tested bound, not a physical maximum.
+A memory estimate cannot promote a profile to ready.
 Results can be zero if even one session fails these targets.
 
 ## 6. Reusable deployment profiles
@@ -194,7 +211,7 @@ Implement four versioned inputs and one generated lock/qualification record:
 |---|---|
 | Model | Artifact revision/hash, format, tokenizer/template provenance, context capability, tools/reasoning support, license |
 | Runtime | Engine, immutable image digest/source commit, GPU architecture compatibility, launch adapter, health/metrics adapters |
-| Hardware | Provider SKU/site, GPU count and memory, host memory, driver/toolkit constraints, storage/mounts |
+| Hardware | Allowed provider SKU/site, GPU identity/count/memory, host RAM, session policy ceiling, driver/toolkit constraints, storage/mounts |
 | Workload | Input/output allowance, latency targets, concurrency discovery policy, checkpoint/cache policy |
 | Resolved record | Exact four input hashes, generated argv, placement, measurements, qualification status and artifact links |
 
@@ -222,7 +239,8 @@ context_per_session: 131072
 concurrency:
   mode: discover
   start: 1
-  growth: adaptive
+  growth: sequential_within_policy
+  policy_ceiling_source: hardware_profile
   qualified_sessions: null
 targets:
   decode_tokens_per_second_min: 10
@@ -271,11 +289,22 @@ Separate immutable machine acquisition from reversible serving configuration:
    The current startup template, `provision_node_secrets.py`, and outputs assume
    vLLM; both runtime adapters must satisfy these contracts. Preserve the existing
    Qwen3.5 deployment as an explicit profile and rollback target.
-7. Router configuration uses the actual backend engine, a model-specific alias,
-   qualified concurrency, and measured timeouts. Verify LiteLLM compatibility
-   with llama.cpp instead of assuming `hosted_vllm` settings transfer. Pin sessions
+7. Router configuration uses the actual backend engine, `redcell-qwen38` alias,
+   qualified concurrency bounded by policy, and measured timeouts. Verify LiteLLM
+   compatibility with llama.cpp instead of assuming `hosted_vllm` settings transfer. Pin sessions
    to replicas for cache reuse; retain full history in the client for recovery.
    Returning sessions to a different model requires an explicit model change.
+   Set per-team admission to one initially, enforce each backend independently,
+   and count White Cell traffic in the same pool. Queued work is not active
+   capacity; expose bounded waits and overload errors. Retries must not duplicate
+   tool actions. Do not use automatic Qwen3.5/64k fallback for Qwen3.8/128k work.
+8. Reconcile held, unmanaged, and replacement-overlap GPU inventory alongside the
+   Terraform planned-role guard. Prefer stable per-machine identities across
+   phases; retain acquired capacity through rehearsal and live. Existing two-role
+   phase maps do not implement this fleet-serving design.
+9. Treat `NVMe_Shared` as the existing NFS mount, not local disk. Validate same-site
+   attachment, simultaneous model loads, and CPU-PLE page residency. Do not assume
+   a weights volume can serve another site or be resized without replacement.
 
 Before provider/OpenTofu commands, source the repository-root `.env` without
 printing it. Site availability and sufficient provider funds are operational
@@ -303,8 +332,10 @@ running service during specification work.
   --jinja --metrics --slots
 ```
 
-Validate a positive integer session count before rendering. Require loader/slot
-evidence of 131,072 tokens per slot and the intended tensor placement. Explicitly
+Validate a positive integer session count bounded by the hardware profile
+ceiling before rendering. Normal serving additionally requires a matching
+qualified report; use the `redcell-qwen38` alias only for the selected service.
+Require loader/slot evidence of 131,072 tokens per slot and the intended tensor placement. Explicitly
 record checkpoint and host-cache settings because they affect both memory and
 warm latency. Unsupported flags or implicit context changes are failures.
 [Server option reference](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md)
@@ -330,23 +361,32 @@ Required procedure:
 4. Release all N requests from a barrier with independent prefixes and cold
    caches. Sample slots and timestamps to prove active overlap. Record prepared
    versus reported token usage; mismatch or missing usage fails qualification.
-5. Repeat concurrent follow-ups with normal growing histories. For sustained
-   steady-state testing, start new histories before exceeding the context contract.
-   Do not silently trim accumulated replies. Measure cache reuse/recomputation and
-   include reasoning consistently in replay according to the model template.
-6. Mix a cold arrival with warm active sessions to expose prefill interference.
-   Collect TTFT, first-answer latency, generation duration/rate, final-answer time,
-   queue time, sampled peak VRAM/RSS, page faults, swap, and per-session errors.
+5. Test concurrent follow-ups using a separate growing-history cohort that starts
+   below 129,024 input tokens, leaving room for the planned replies and tool/user
+   turns. Token-count each replay, including reasoning as the template requires;
+   measure warm follow-ups near the input limit and retire the history before it
+   overflows. An initial 129,024-token cold prompt cannot accommodate an ordinary
+   follow-up under the same input limit. Start a new conversation rather than
+   trimming completed turns. Record cache reuse and recomputation.
+6. At N > 1, mix one cold arrival with N-1 warm active sessions to expose prefill
+   interference without exceeding the candidate slot count. At N=1, measure
+   queued-arrival delay and warm/cold turns separately. Collect TTFT, first-answer
+   latency, generation duration/rate, final-answer time, queue time, sampled peak
+   VRAM/RSS, page faults, swap, and per-session errors.
 7. At each candidate N, collect at least 100 measured turns including at least
    20 cold full-context requests, with a minimum 30-minute soak. Report sample
    counts with p95 values; repeat the highest passing N after a clean restart.
-8. Increase N through the candidates in section 2, then adaptively until a memory,
-   quality, or latency gate fails. Test intermediate counts to resolve the largest
-   passing N. An operational time limit may stop discovery: label the result a
-   tested lower bound rather than claiming a maximum.
+8. Increase N sequentially through section 2 within the current policy ceiling.
+   Stop at the ceiling or a memory, quality, or latency failure; retain the largest
+   passing tested count. A time-limited run or passing ceiling is a tested bound
+   under policy, not an unrestricted maximum. A policy increase needs a separate
+   explicit revision before trials above the ceiling.
 9. Repeat after any change in model, quantization, runtime, GPU SKU, offload,
    checkpoint/cache settings, or workload. Never infer an RTX/H100 qualification
-   solely from H200 memory use.
+   solely from H200 memory use. Test two RTX processes simultaneously if sharing
+   a host, then rehearse the combined fleet with eight independent team loops
+   and host-loss recovery. Apply per-replica limits even when queues or retries
+   are active. Report remaining measured capacity, not a full-fleet failover claim.
 
 Correctness must automatically verify all session markers, absence of another
 session's markers, follow-up continuity, and valid stub tool arguments. Handle
@@ -368,10 +408,12 @@ benchmark for any of these hosts.
    profile change produces no instance/volume replacement and rollback restores
    authenticated Qwen3.5 inference after a failed candidate start.
 3. Implement workload-driven capacity evaluation and machine-readable reports.
-   Router admission limits must use only a matching qualified report.
+   Router admission limits must use only a matching qualified report, bounded by
+   the current session policy. Test backend/global/team limits and recovery.
 4. Qualify H200 first, then independently qualify H100 and RTX. Publish the largest
    passing concurrency (or tested lower bound), resource measurements, latency
-   distributions, and failure boundary for each configuration.
+   distributions, and observed failure boundary or policy ceiling for each
+   configuration.
 5. Add another model profile through the same resolver without changing Terraform
    model-specific logic. Verify its own tokenizer, tools, memory, and runtime.
 
@@ -382,5 +424,7 @@ infra and harness checks when those components are changed. This specification
 alone requires documentation/link review, not a provider apply or GPU benchmark.
 
 Completion evidence is a table of measured comfortable session counts for all
-three GPUs with reproducible manifests. Until those runs exist, use section 2
+three GPU types with reproducible manifests, plus combined eight-team rehearsal
+and degraded-capacity results. H200 loss leaves at most five provisional slots;
+there is no full eight-team N+1 guarantee. Until those runs exist, use section 2
 only to plan trials; leave `qualified_sessions` unset.

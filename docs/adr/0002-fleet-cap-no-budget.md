@@ -4,6 +4,13 @@ Status: accepted · Date: 2026-09-24
 Supersedes: [ADR 0001](0001-provider-model-topology.md) decision 3 and the
 budget parts of its context/consequences.
 
+> **Superseded in part by [ADR 0003](0003-qwen38-gguf-fleet-serving.md):** the
+> hardware cap and no-budget decision remain current. Qwen3.5 FP8/Int4 serving
+> and automatic smaller-context failover are legacy implementation. The blanket
+> same-family-node statements below were too broad: two single-GPU RTX nodes fit
+> the cap; two dual-GPU RTX nodes do not. `ARCHITECTURE.md` is again the current
+> target design. Keep the original rationale below as historical context.
+
 ## Context
 The €500 hard ceiling from ADR 0001 is removed at the operator's direction.
 In its place: a hard ceiling on hardware, not cost. Never run more than

@@ -1,8 +1,12 @@
 # Qwen3.8 GGUF experiment on one RTX PRO 6000
 
-For the current hardware-independent design and concurrency discovery at 126k
-input, see [the deployment specification](MODEL-DEPLOYMENT-SPEC.md). This document
-is the earlier fixed two-slot experiment, not a measured capacity limit.
+**Historical experiment procedure, not a result or current deployment plan.**
+The selected model is now Qwen3.8 Abliterated Q4_K_M under
+[ADR 0003](adr/0003-qwen38-gguf-fleet-serving.md). Use the
+[deployment specification](MODEL-DEPLOYMENT-SPEC.md) for current context,
+checkpoint/cache settings, session ceilings, and qualification gates, and the
+[capacity runbook](CAPACITY-RUNBOOK.md) before node work. Commands below describe
+an isolated earlier trial and do not authorize an apply or service interruption.
 
 This is a temporary, reversible capacity and performance experiment for the
 `1RTXPRO6000.30V` instance (one RTX PRO 6000 with 96 GB VRAM) in Finland. It
@@ -15,14 +19,11 @@ fit entirely in GPU memory. CPU offload, available host RAM, actual allocation,
 and simultaneous 128k sessions are feasibility questions to measure, not
 assumptions. Keep the test isolated from the production endpoint.
 
-The selected checkpoint is an abliterated community conversion that removes
-refusals. Treat this as a private technical evaluation artifact, not a
-production model recommendation. Its model card says it uses Qwen Community
-License 1.0 and that third-party Model-as-a-Service use requires a separate
-license. Do not expose it to exercise participants or use it in production
-without resolving that license. The repository's production choice and
-licensing rationale remain in
-[`ARCHITECTURE.md`](ARCHITECTURE.md).
+Selection of this artifact is now the target design; production qualification
+is still pending. Preserve Qwen Community License 1.0 and the organiser's
+assessment of participant-service applicability, as described in
+[the architecture](ARCHITECTURE.md). The old Qwen3.5 service remains an explicit
+rollback target. This procedure does not establish GGUF quality or concurrency.
 
 Before starting, confirm the **actual Verda project balance is positive** in
 the console. With a zero balance Verda can discontinue the instance and move
@@ -30,9 +31,9 @@ attached volumes to trash. Trashed volumes are recoverable for 96 hours, and
 restoring them charges the project balance ([Verda storage recovery rules](https://docs.verda.com/storage/deleting-storage/)).
 There is no Terraform budget ceiling to check against; the repository's
 binding constraint is the GPU fleet cap (`local.fleet_limit` in
-`infra/locals.tf`) — this test's single `1RTXPRO6000.30V` fits inside it
-alongside whatever else is already running, but confirm with `make fleet`
-(or the `fleet` output) before applying.
+`infra/locals.tf`) — this test's single `1RTXPRO6000.30V` consumes one of the two
+RTX GPU allowances. Reconcile actual held inventory as well as `make fleet`
+(or the `fleet` output); other running RTX nodes may already consume both.
 
 ## 1. Select and check the test node
 
@@ -98,7 +99,7 @@ cd /mnt/weights/qwen38-test
 
 curl --fail --location --retry 5 --continue-at - \
   --output Qwen3.8-Flash-Next-Abliterated-Q4_K_M.gguf \
-  'https://huggingface.co/windowsxp811203/Qwen3.8-Flash-Next-Abliterated-GGUF/resolve/c3365c4/Qwen3.8-Flash-Next-Abliterated-Q4_K_M.gguf'
+  'https://huggingface.co/windowsxp811203/Qwen3.8-Flash-Next-Abliterated-GGUF/resolve/c3365c410baa29bdd3d7cc8cbc2bf9bee0de2f3a/Qwen3.8-Flash-Next-Abliterated-Q4_K_M.gguf'
 
 sha256sum Qwen3.8-Flash-Next-Abliterated-Q4_K_M.gguf
 ```
@@ -230,8 +231,8 @@ The client then replays each full conversation and its first answer, asks for
 the markers again, and token-counts that follow-up before sending it with a
 128-token output limit. It records a follow-up error if the replay would exceed
 the per-slot context. The follow-up is a continuity check; the concurrent long
-prompts are the actual 128k-capacity measurement. The existing
-`evals/runner.py` is sequential and does not measure this requirement.
+prompts are a two-stream observation, not comfortable-capacity qualification.
+The existing `evals/runner.py` is sequential and does not measure this requirement.
 
 After the memory test succeeds, check automatic tool-call formatting against
 the harness's registered `enumerate_hosts` schema and synthetic scope. The

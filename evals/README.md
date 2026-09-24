@@ -1,34 +1,36 @@
-# Model bake-off (phase P2)
+# Model and capacity evaluation
 
-The 10 hours of P2 exist to answer one question with data, not vibes: **which of
-the three candidates should carry the live exercise**, and does it hold up at
-128k context.
+The selected deployment is Qwen3.8 Abliterated Q4_K_M with llama.cpp. Current
+clients are building blocks; they do not yet implement the qualification contract
+in [MODEL-DEPLOYMENT-SPEC.md](../docs/MODEL-DEPLOYMENT-SPEC.md). Coding tasks are in
+[IMPLEMENTATION-HANDOFF.md](../docs/IMPLEMENTATION-HANDOFF.md).
 
-Candidates (all fit 2× RTX PRO 6000, all Apache/MIT/NVIDIA-open):
+| File | Use | Limitation |
+|---|---|---|
+| `runner.py` / `compare.py` | Sequential endpoint/model comparisons | Cannot prove concurrent full-context capacity |
+| `llama_two_slot_context.py` | Token-counted, two-stream long-context experiment | Fixed alias/count, sequential follow-ups, incomplete automated SLO/correctness gates |
+| `check_stub_tool.py` | Structured call parsing and synthetic scope validation | Never executes the requested tool; not a capacity benchmark |
+| `model_capacity.py` | Planned general qualification runner | Not implemented |
 
-| model | active | KV @8×128k | note |
-|---|---|---|---|
-| `Qwen/Qwen3.5-122B-A10B-FP8` | 10B | 12.0 GB | published agentic benchmarks |
-| `inclusionAI/Ling-3.0-flash-FP8` | 5.1B | 3.9 GB | fastest decode; vLLM support only weeks old |
-| `nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8` | 12B | 4.0 GB | ~3% measured security-refusal rate |
+The old Qwen3.5/Ling/Nemotron bake-off does not choose the new primary. Other
+models require their own explicit decision and qualified deployment profile.
 
-**The one thing that can change the answer:** prefix caching on the linear/GDN
-layers. Agentic loops resend a long system prompt every turn; if prefix caching
-is broken, time-to-first-token goes from <1s to 5–15s. `runner.py` measures it.
+## Required qualification
 
-## Run
+Measure 129,024 input tokens (including template/tools/history), reserving 2,048
+output tokens including reasoning: 131,072 per slot. Start N=1 and test within
+policy ceilings: H200 4, H100 1, RTX PRO 6000 2 per GPU. Do not silently shorten
+contexts, count queued requests as active capacity, or infer one GPU's results
+from another's memory size.
 
-```bash
-# against each candidate's endpoint in turn (bring it up, point BASE_URL at it):
-BASE_URL=http://node:8000/v1 API_KEY=... MODEL=redcell-adversary \
-  python runner.py --context 65536  --out results/qwen-64k.json
-BASE_URL=... python runner.py --context 131072 --out results/qwen-128k.json
-```
+Required cases include independent concurrent cold histories, concurrent warm
+follow-ups, mixed arrivals, deterministic retrieval/isolation, valid stub tool
+arguments, and host-loss recovery. Record usage/overlap, per-session latency and
+decode rate, peak GPU/CPU memory, failures, profile hashes, and exact runtime pins.
+A memory estimate or successful arithmetic answer is not qualification.
 
-Then `python compare.py results/*.json` for the side-by-side.
-
-The sequential bake-off runner does not establish concurrent full-context
-capacity. For the temporary two-slot llama.cpp trial on the existing H200, use
-[`../docs/QWEN38-H200-EXPERIMENT.md`](../docs/QWEN38-H200-EXPERIMENT.md) and
-`llama_two_slot_context.py`; it measures the actual rendered prompt with the
-server tokenizer before submitting both streams concurrently.
+Historical trial procedures are retained in
+[the H200 note](../docs/QWEN38-H200-EXPERIMENT.md) and
+[the RTX note](../docs/QWEN38-RTX-PRO-EXPERIMENT.md). They do not authorize a live
+service interruption or acquisition and are not evidence that a test was run.
+Use the current spec for acceptance criteria and the runbook for node handling.

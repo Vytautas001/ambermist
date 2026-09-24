@@ -1,5 +1,13 @@
 # infra — Terraform / OpenTofu
 
+> **Migration status (2026-09-24):** this file describes the existing
+> Qwen3.5/vLLM implementation and recorded smoke checks. The selected target is
+> Qwen3.8 Abliterated GGUF with llama.cpp and independent qualified replicas.
+> See [the architecture](../docs/ARCHITECTURE.md) and
+> [coding handoff](../docs/IMPLEMENTATION-HANDOFF.md). Existing `make p4` and
+> `make live4` do not implement that target; serving-slot and router limits still
+> need migration. Treat commands below as legacy operations, not a migration plan.
+
 The exercise's inference infrastructure on Verda: a primary + standby vLLM node
 pair (different hardware families, so failover — not equal load-balancing — see
 `../router/litellm.config.yaml`), a persistent weights volume, and a phased
@@ -8,21 +16,24 @@ capped at a fixed GPU fleet: never more than 1x H200 + 1x H100 + 2x RTX PRO 6000
 (GPUs). There is no monetary budget ceiling.
 
 See the repo root for the full picture:
+
 - `../docs/ARCHITECTURE.md` — the design and the reasoning
 - `../docs/CAPACITY-RUNBOOK.md` — what to do when the SKU is out of stock
-- `../CLAUDE.md` — constraints that must not be silently violated
+- `../AGENTS.md` — shared coding-assistant constraints
 
 ## Use
 
 ```bash
 cp terraform.tfvars.example terraform.tfvars   # your operators, region
-export VERDA_CLIENT_ID=... VERDA_CLIENT_SECRET=...
+set -a
+source ../.env                               # repository-root credentials
+set +a
 
 make preflight     # is the target SKU in stock right now?
 make p0            # pull weights (once)
 make p2            # bake-off nodes
 make p4            # rehearsal + live, held
-make live4         # 4 teams: one RTX PRO 6000 Int4 at 128k, held a week
+make live4         # legacy single-RTX profile; not qualified for the new policy
 make off           # only after the exercise
 make orphans       # OS volumes survive instance deletion — check for strays
 ```
@@ -66,8 +77,8 @@ an automatic tool call parses correctly. It does not execute the requested tool.
 Credentials stay on the node, and the script prints only validation results.
 These are serving smoke checks, not the P2 long-context or concurrency bake-off.
 
-Startup scripts run only at initial provisioning. Template changes must also be
-installed into the existing node's systemd service and followed by
+Startup scripts run only at initial provisioning. When explicitly migrating a
+serving profile, changes must be installed into the existing node's systemd service and followed by
 `systemctl daemon-reload` and `systemctl restart redcell-vllm`. Keep the acquired
 P1 instance: applying a changed immutable startup script is not an in-place
 service repair. The original service can be backed up before replacing it.
