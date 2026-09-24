@@ -3,6 +3,11 @@ output "phase" {
   value       = var.phase
 }
 
+output "project" {
+  description = "Project prefix used for the node's vLLM systemd service."
+  value       = var.project
+}
+
 output "instances" {
   description = "Per-role instance facts. ip can be null immediately after create; re-run terraform refresh."
   value = {

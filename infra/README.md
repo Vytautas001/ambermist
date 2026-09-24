@@ -29,10 +29,20 @@ Provider gotchas, the phase model and the budget guard are documented in
 
 ## P1 serving checks
 
-The node needs `/mnt/weights/.env` (root-owned, mode `0600`) containing
-`HF_TOKEN` and a nonempty `VLLM_API_KEY`. The service refuses to start without
-the API key. Transfer credentials over SSH; never put them in Terraform inputs
-or startup-script content.
+After each `make p0`, `make p1`, `make p2`, `make p4`, or `make live4`, the
+apply target reads `HF_TOKEN` and `VLLM_API_KEY` from the exported repository
+root `.env` and sends them over SSH to every active serving node. It atomically
+writes `/mnt/weights/.env` as root with mode `0600`, then restarts vLLM if the
+credentials changed or the service is inactive. The credentials travel through
+SSH stdin and do not enter Terraform inputs, state, command arguments, or
+startup-script content. Ensure the operator SSH key is available to `ssh` (for
+example through `ssh-agent`) and source the repository root `.env` before
+running infra Make targets.
+
+The weights volume is persistent across phase changes, so the installed file
+survives node replacement. Each serving node is provisioned after apply, before
+the Make target returns. To resync credentials later, run `make provision-secrets`
+from `infra/` with the root `.env` sourced.
 
 Both the bake step and serving container use `HF_HUB_CACHE=/weights/hf-cache`.
 With vLLM v0.28.0, omit the removed `--swap-space` flag and use `qwen3_coder`

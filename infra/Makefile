@@ -26,7 +26,7 @@ PREFLIGHT_ARGS = $(if $(PREFLIGHT_TARGET_SKU),--target-sku $(PREFLIGHT_TARGET_SK
                  $(if $(PREFLIGHT_TARGET_TP),--target-tp $(PREFLIGHT_TARGET_TP)) \
                  $(if $(location),--target-location $(location))
 
-.PHONY: help init fmt validate $(PHASES) plan-% status cost off orphans reap-orphans clean
+.PHONY: help init fmt validate $(PHASES) plan-% status cost off orphans reap-orphans clean provision-secrets
 
 help:
 	@grep -E '^[a-z0-9-]+:.*?##' $(MAKEFILE_LIST) | sed 's/:.*##/\t/' | column -t -s "$$(printf '\t')"
@@ -70,6 +70,10 @@ watch: check-creds ## poll availability every 15 min and log history (run this f
 	@python3 ../ops/preflight.py --watch 900
 
 apply: check-creds
+	@if [ "$(PHASE)" != "off" ]; then \
+	  test -n "$$HF_TOKEN" || { echo "ERROR: HF_TOKEN not set; source ../.env first"; exit 1; }; \
+	  test -n "$$VLLM_API_KEY" || { echo "ERROR: VLLM_API_KEY not set; source ../.env first"; exit 1; }; \
+	fi
 	@echo "=== phase $(PHASE) ==="
 	@echo "--- capacity preflight ---"
 	@python3 ../ops/preflight.py $(PREFLIGHT_ARGS) || { \
@@ -77,7 +81,11 @@ apply: check-creds
 	  echo "Set phase_node_sku/phase_node_tp/location to an available target, or read docs/CAPACITY-RUNBOOK.md."; \
 	  read -p "Continue anyway? [y/N] " a; [ "$$a" = "y" ] || exit 1; }
 	$(TF) apply -var-file=$$(ls phases/$(PHASE)*.tfvars) $(TF_VAR_ARGS) $(TF_ARGS)
+	@TF="$(TF)" python3 ../ops/provision_node_secrets.py
 	@$(TF) output -raw burn_warning 2>/dev/null && echo
+
+provision-secrets: ## securely copy root .env inference credentials to serving nodes
+	@TF="$(TF)" python3 ../ops/provision_node_secrets.py
 
 status: ## show instances and cost projection
 	@$(TF) output -json instances 2>/dev/null | python3 -m json.tool || echo "no instances"
