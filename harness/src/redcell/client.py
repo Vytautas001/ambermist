@@ -1,4 +1,4 @@
-"""OpenAI-compatible client for the vLLM endpoint behind the LiteLLM router.
+"""OpenAI-compatible client for the Qwen3.8 endpoint behind the LiteLLM router.
 
 Deliberately thin: the router handles load balancing, failover and per-team
 limits, so this only needs correct retries, long timeouts and clean tool-call
@@ -42,8 +42,8 @@ except ImportError:  # pragma: no cover - fallback for minimal environments
             return wrapper
         return deco
 
-# Worth retrying: the router is failing over, or a node is still loading weights
-# (first start pulls ~125 GB from the shared volume and can take 10-20 minutes).
+# Worth retrying: the router is queueing or rebalancing, or a node is still loading
+# weights (the ~111 GiB GGUF loads from the shared volume and can take a while).
 RETRYABLE_STATUS = {408, 429, 500, 502, 503, 504}
 
 
@@ -135,8 +135,7 @@ class RedCellClient:
         tools = list(tools or [])
         if tools:
             body["tools"] = tools
-            # gpt-oss-120b supports only tool_choice="auto"; keeping to it means
-            # the fallback model works without changing the harness.
+            # Keep tool_choice="auto"; the harness does not force a specific tool.
             body["tool_choice"] = "auto"
 
         try:

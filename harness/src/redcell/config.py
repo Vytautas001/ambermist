@@ -9,8 +9,8 @@ from pydantic import BaseModel, Field, field_validator
 
 
 class EndpointConfig(BaseModel):
-    """Where the model lives. Point this at the LiteLLM router, never at a vLLM
-    node directly — the router is what enforces per-team fairness and failover."""
+    """Where the model lives. Point this at the LiteLLM router, never at a serving
+    replica directly — the router is what enforces per-team admission."""
 
     base_url: str = Field(default_factory=lambda: os.environ.get(
         "REDCELL_BASE_URL", "http://localhost:4000/v1"))
@@ -30,7 +30,7 @@ class SamplingConfig(BaseModel):
     temperature: float = 0.7
     top_p: float = 0.9
     max_tokens: int = 2048
-    # Qwen3.5 exposes a reasoning trace; keep it out of the transcript the Blue
+    # Qwen3.8 exposes a reasoning trace; keep it out of the transcript the Blue
     # Team ever sees, but DO keep it in the audit log for after-action review.
     include_reasoning_in_audit: bool = True
 

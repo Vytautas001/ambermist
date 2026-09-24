@@ -36,7 +36,8 @@ the cap, contrary to the older blanket statement about same-family nodes.
    and report a tested bound. No unrestricted concurrency discovery in this scope.
 5. Preserve 129,024 input plus 2,048 output tokens per slot, including reasoning.
    On host loss replay the full transcript to an eligible replica or queue/pause.
-   Qwen3.5 at 64k remains an explicit rollback service, with a distinct alias.
+   Qwen3.5 at 64k remains an explicit rollback service, aliased `redcell-qwen35`
+   (public aliases follow `redcell-<model>`; `redcell-adversary` is retired).
 6. Separate machine acquisition from mutable serving manifests. Retain held
    machines and protected volumes through model changes and rehearsal/live.
    Reconcile actual provider inventory as well as planned Terraform roles.

@@ -290,7 +290,8 @@ Separate immutable machine acquisition from reversible serving configuration:
    vLLM; both runtime adapters must satisfy these contracts. Preserve the existing
    Qwen3.5 deployment as an explicit profile and rollback target.
 7. Router configuration uses the actual backend engine, `redcell-qwen38` alias,
-   qualified concurrency bounded by policy, and measured timeouts. Verify LiteLLM
+   qualified concurrency bounded by policy, and measured timeouts. Aliases follow
+   `redcell-<model>`; the Qwen3.5 rollback is `redcell-qwen35`. Verify LiteLLM
    compatibility with llama.cpp instead of assuming `hosted_vllm` settings transfer. Pin sessions
    to replicas for cache reuse; retain full history in the client for recovery.
    Returning sessions to a different model requires an explicit model change.

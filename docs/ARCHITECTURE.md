@@ -45,6 +45,13 @@ single-GPU RTX nodes **are allowed**; two dual-GPU RTX nodes are not.
 `local.fleet_limit` in [infra/locals.tf](../infra/locals.tf) is the implemented
 source for GPU counts, enforced for planned roles by `terraform_data.fleet_guard`.
 
+> **Allow-list relaxation considered and rejected ([ADR 0004](adr/0004-relax-allowlist-b200-primary.md)).**
+> The 111 GiB Q4_K_M weights fit on-GPU only on the H200 under the cap above; the
+> H100/RTX replicas depend on CPU-PLE offload and are marginal (§4). Adding a
+> larger primary (B200) was weighed and **rejected on cost**, so the cap above
+> stands and B200 remains `family = "blocked"`. The model is served on the existing
+> fleet — H200 on-GPU, H100/RTX via offload, qualified per node. No fleet change.
+
 A full session reserves **131,072 tokens: 129,024 input + 2,048 output**, with
 reasoning included in output. Input includes system instructions, tool schemas,
 history, and template delimiters. This is the full-context qualification target.
@@ -176,8 +183,9 @@ Routing requirements:
   admission limits. White Cell uses the same admission pool. Queued work is not
   counted as active full-context capacity; bounded waits and queue delay are
   visible in metrics and errors.
-- Use a model-specific public alias such as `redcell-qwen38`; rollback Qwen3.5
-  uses a distinct alias. Validate llama.cpp OpenAI-compatible API integration
+- Public aliases follow `redcell-<model>`: `redcell-qwen38` for the selected
+  service, `redcell-qwen35` for the explicit Qwen3.5 rollback. The legacy
+  `redcell-adversary` alias is retired and must not be reused. Validate llama.cpp OpenAI-compatible API integration
   with the pinned LiteLLM version. A global/per-key `max_parallel_requests`
   setting alone is not a per-backend capacity guarantee.
 - Retry only within eligible capacity. Retain complete transcripts outside the

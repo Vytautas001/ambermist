@@ -88,6 +88,14 @@ in Terraform. Preserve the Qwen3.5 service as a rollback profile during migratio
 Reject unknown profile keys, missing immutable pins, unsupported combinations,
 insufficient resources, and stale qualification. Keep secrets out of profiles.
 
+Naming and configuration: public model aliases follow `redcell-<model>`:
+`redcell-qwen38` (selected) and `redcell-qwen35` (explicit rollback). The legacy
+`redcell-adversary` alias is retired; replace it in the harness default, router,
+key issuance, ops checks, and docs. `.env` holds credentials and per-deployment
+values in the order of [.env.example](.env.example); pins, context, and session
+limits stay in versioned profiles. Do not rename a `VLLM_*`/`NODE_*` variable
+without migrating every reader and the node's `/mnt/weights/.env` in one change.
+
 Session enforcement belongs in the server (`--parallel` / `--max-num-seqs`) and
 router admission per backend and per team. A global/per-key LiteLLM setting alone
 does not enforce backend capacity. Verify the pinned router's actual semantics.

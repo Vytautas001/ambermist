@@ -43,8 +43,11 @@ These findings come from repository inspection, not a live infrastructure audit.
 | `ops/preflight.py` | Old FP8 preference ladder; explicit `--target-sku` branch checks stock but does not enforce the complete hardware policy | Validate exact allowlist/count/site for every acquisition path; never treat stock as policy approval |
 | `ops/provision_node_secrets.py`, `ops/check_inference.py`, infra outputs/Makefile | Assume vLLM unit, key/alias, and at most existing node roles | Runtime-neutral service/health/secret targets for all replicas |
 | `router/litellm.config.yaml`, `router/issue-team-keys.sh` | Two vLLM entries; automatic smaller-context fallback; three concurrent requests per key | Same-artifact/context replicas, per-backend admission, one active request per team initially, distinct rollback alias |
-| `harness/src/redcell/client.py`, `config.py`, `loop.py` | Existing alias, timeout/output/history/retry contracts need inspection | Support explicit model identity, token contract, recovery and queue behavior; preserve stubs and audit |
+| `harness/src/redcell/client.py`, `config.py`, `loop.py` | Default alias `redcell-adversary`; timeout/output/history/retry contracts need inspection | Support explicit model identity, token contract, recovery and queue behavior; preserve stubs and audit |
 | `evals/llama_two_slot_context.py` | Two fixed sessions and alias; sequential follow-ups; incomplete SLO/correctness gates | General capacity evaluator; fix exception path using unset/stale `follow` result |
+| Alias and env naming across `router/`, `ops/`, harness, `.env.example` | `redcell-adversary` alias; `VLLM_*`/`NODE_A_URL`/`NODE_B_URL` variables | Adopt `redcell-qwen38`/`redcell-qwen35`; introduce the target names in [.env.example](../.env.example) with the current names accepted until every reader and the node env file migrate together |
+| `infra/experiments/qwen38-rtx-test.tfvars` | Combined with `p0-bake.tfvars` it boots `standby_model` (Qwen3.5 GPTQ-Int4, vLLM), not Qwen3.8; Qwen3.8 is started by hand per the experiment doc | Replace with a profile-driven Qwen3.8 test target; until then it is not the Qwen3.8 infrastructure path |
+| `.github/workflows/harness.yml`, `infra.yml` | Trigger pushes on `main`, but the default branch is `master`, so direct pushes are not checked (`capacity.yml` was removed on 2026-09-24) | Fix the branch filter; keep only workflows that validate code |
 | `evals/runner.py` | Sequential legacy model comparison | Keep as optional comparison; never use as concurrent-capacity proof |
 
 `deploy/`, `ops/model_deploy.py`, and `evals/model_capacity.py` below are proposed
@@ -144,7 +147,8 @@ Pin the LiteLLM version and verify its llama.cpp integration and deployment-limi
 semantics. Generate eligible backends from matching qualified reports. Implement
 missing admission/affinity behavior explicitly if the router cannot supply it;
 do not invent a YAML option or mistake a per-key cap for a deployment semaphore.
-Use `redcell-qwen38` for the selected model and a separate Qwen3.5 rollback alias.
+Use `redcell-qwen38` for the selected model and `redcell-qwen35` for the Qwen3.5
+rollback (convention `redcell-<model>`). Retire `redcell-adversary` everywhere.
 
 Acceptance:
 
