@@ -132,6 +132,7 @@ echo "=== bake: pulling checkpoints to $MOUNT/hf-cache ==="
 docker run --rm \
   -e HF_TOKEN="$${HF_TOKEN:-}" \
   -e HF_HOME=/weights/hf-cache \
+  -e HF_HUB_CACHE=/weights/hf-cache \
   -v "$MOUNT:/weights" \
   --entrypoint /bin/bash "$VLLM_IMAGE" -c '
     set -e
@@ -159,7 +160,8 @@ Type=exec
 Restart=always
 RestartSec=20
 TimeoutStartSec=1800
-EnvironmentFile=-$MOUNT/.env
+EnvironmentFile=$MOUNT/.env
+ExecStartPre=/bin/sh -c 'test -n "\$\$VLLM_API_KEY"'
 ExecStartPre=-/usr/bin/docker rm -f ${project}-vllm
 ExecStart=/usr/bin/docker run --rm --name ${project}-vllm \\
   --gpus all --ipc=host --shm-size=16g --ulimit memlock=-1 --ulimit stack=67108864 \\
@@ -167,6 +169,7 @@ ExecStart=/usr/bin/docker run --rm --name ${project}-vllm \\
   -p 8000:8000 \\
   -v $MOUNT:/weights \\
   -e HF_HOME=/weights/hf-cache \\
+  -e HF_HUB_CACHE=/weights/hf-cache \\
   -e HF_TOKEN \\
   -e VLLM_API_KEY \\
   $VLLM_IMAGE \\
@@ -180,10 +183,9 @@ ExecStart=/usr/bin/docker run --rm --name ${project}-vllm \\
     --enable-prefix-caching \\
     --kv-cache-dtype fp8 \\
     --gpu-memory-utilization $GPU_MEM_UTIL \\
-    --swap-space 8 \\
     --reasoning-parser qwen3 \\
     --enable-auto-tool-choice \\
-    --tool-call-parser hermes \\
+    --tool-call-parser qwen3_coder \\
     --max-cudagraph-capture-size 256 \\
     --host 0.0.0.0 --port 8000
 ExecStop=/usr/bin/docker stop -t 60 ${project}-vllm
@@ -201,7 +203,8 @@ systemctl enable --now ${project}-vllm.service
 for i in $(seq 1 90); do
   if curl -fsS http://127.0.0.1:8000/health >/dev/null 2>&1; then
     echo "=== vLLM healthy after $((i*20))s ==="
-    curl -s http://127.0.0.1:8000/v1/models || true
+    printf 'header = "Authorization: Bearer %s"\n' "$${VLLM_API_KEY:-}" \
+      | curl -fsS --config - http://127.0.0.1:8000/v1/models
     exit 0
   fi
   sleep 20

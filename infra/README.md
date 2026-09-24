@@ -26,3 +26,42 @@ make orphans       # OS volumes survive instance deletion — check for strays
 
 Provider gotchas, the phase model and the budget guard are documented in
 `../docs/` and enforced by preconditions in `instances.tf`.
+
+## P1 serving checks
+
+The node needs `/mnt/weights/.env` (root-owned, mode `0600`) containing
+`HF_TOKEN` and a nonempty `VLLM_API_KEY`. The service refuses to start without
+the API key. Transfer credentials over SSH; never put them in Terraform inputs
+or startup-script content.
+
+Both the bake step and serving container use `HF_HUB_CACHE=/weights/hf-cache`.
+With vLLM v0.28.0, omit the removed `--swap-space` flag and use `qwen3_coder`
+for Qwen3.5 tool calls (see the
+[vLLM recipe](https://github.com/vllm-project/recipes/blob/main/Qwen/Qwen3.5.md)).
+
+After `/health` is ready, run this from the repository root, substituting the
+node IP and operator key:
+
+```bash
+ssh -i /path/to/operator-key root@NODE_IP \
+  'set -a; . /mnt/weights/.env; set +a; python3 -' < ops/check_inference.py
+```
+
+This checks that unauthenticated discovery returns 401, the authenticated model
+list contains `redcell-adversary`, an arithmetic completion returns `42`, and
+an automatic tool call parses correctly. It does not execute the requested tool.
+Credentials stay on the node, and the script prints only validation results.
+These are serving smoke checks, not the P2 long-context or concurrency bake-off.
+
+Startup scripts run only at initial provisioning. Template changes must also be
+installed into the existing node's systemd service and followed by
+`systemctl daemon-reload` and `systemctl restart redcell-vllm`. Keep the acquired
+P1 instance: applying a changed immutable startup script is not an in-place
+service repair. The original service can be backed up before replacing it.
+
+Validated on 2026-09-24: the existing FIN-02 H200 (TP=1) served
+`Qwen/Qwen3.5-122B-A10B-GPTQ-Int4` with vLLM v0.28.0 at a 65,536-token
+configured context limit. All four smoke checks passed; the arithmetic request
+used 26 prompt tokens and 3 completion tokens and completed in 0.29 seconds.
+The weights snapshot was `30cd92cba9707a9aba09d1e490ed4b66b78e9606`.
+Long-context performance and multi-team concurrency remain untested.
