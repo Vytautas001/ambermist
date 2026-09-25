@@ -10,7 +10,7 @@ in [MODEL-DEPLOYMENT-SPEC.md](../docs/MODEL-DEPLOYMENT-SPEC.md). Coding tasks ar
 | `runner.py` / `compare.py` | Sequential endpoint/model comparisons | Cannot prove concurrent full-context capacity |
 | `llama_two_slot_context.py` | Token-counted, two-stream long-context experiment | Fixed alias/count, sequential follow-ups, incomplete automated SLO/correctness gates |
 | `check_stub_tool.py` | Structured call parsing and synthetic scope validation | Never executes the requested tool; not a capacity benchmark |
-| `model_capacity.py` | Planned general qualification runner | Not implemented |
+| `model_capacity.py` | Planned general qualification runner | Not implemented; scoped in [the experiment plan](../docs/QWEN38-EXPERIMENT-PLAN.md) |
 
 The old Qwen3.5/Ling/Nemotron bake-off does not choose the new primary. Other
 models require their own explicit decision and qualified deployment profile.

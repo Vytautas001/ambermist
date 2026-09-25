@@ -9,6 +9,10 @@ Read [AGENTS.md](../AGENTS.md), [ARCHITECTURE.md](ARCHITECTURE.md), and
 [capacity runbook](CAPACITY-RUNBOOK.md) before topology changes. The latest user
 request controls which part of this backlog to execute.
 
+For the first live step, the H200 qualification experiment, follow
+[QWEN38-EXPERIMENT-PLAN.md](QWEN38-EXPERIMENT-PLAN.md): it scopes packages A, C
+and D to one replica and defines the operator gates.
+
 ## 1. Outcome and invariants
 
 Implement portable, reversible serving of the selected Qwen3.8 Abliterated Q4_K_M
