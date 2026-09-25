@@ -100,18 +100,21 @@ Rules:
 - **Copy the pins, don't retype them.** Take repository, revision, `entry_file`
   and the per-shard `size_bytes` and `sha256` verbatim from the experiment plan.
   A test compares them against those blocks.
-- **llama.cpp commit.** Use the experiment plan §4.1 criteria: include PR #27742,
-  check against issue #28734, and verify the spec §8 flags. Do not guess the
-  commit. If none qualifies, leave the field empty and report it; step 1 in §2
-  then blocks the run.
-- **Build container.** `build_image` is a CUDA 12.8+ `devel` image pinned by
-  digest. It must be able to compile for both sm_90 and sm_120.
+- **llama.cpp commit.** Use the pin selected in experiment plan §4.1.1
+  (`e9f824d`), and run the re-verification steps listed there. If a check
+  fails, leave the field empty and report it; step 1 in §2 then blocks the run.
+  Do not substitute another commit.
+- **Build container.** Use `build_image` and the `linux/amd64` `build_image_digest`
+  from §4.1.1 (CUDA 12.8.1 `devel`). The bootstrap builds with
+  `cmake_args_by_arch` for the node's architecture only.
 - **H200 `placement_args`:** `--n-gpu-layers all --override-tensor 'per_layer_token_embd=CPU'`.
 - **RTX `placement_args`:** the same, plus an extra CPU offload for part of the
   weights. One RTX PRO 6000 has 96 GB, and the weights are 104–111 GiB.
   - Use the §4.4 GGUF inspection to choose the tensors, for example
     `--n-cpu-moe <k>` or a regex for `--override-tensor`. Pick whichever the
-    pinned commit supports for `qwen4exp`.
+    pinned commit supports for `qwen4exp`. The parser at `e9f824d` accepts
+    `--n-cpu-moe`, but nobody has confirmed that it matches `qwen4exp`
+    tensor names.
   - Mark the value `provisional: true` in the YAML.
   - Do not use `--fit on`. Automatic placement may shrink the context, and
     spec §8 requires `--fit off`.

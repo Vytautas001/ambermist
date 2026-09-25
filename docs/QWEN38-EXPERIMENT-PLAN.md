@@ -167,6 +167,101 @@ the build record (§5.3) captures compiler, CUDA, driver and `cmake` flags. If n
 commit satisfies all flags, stop and report which flags are missing. Do not drop
 a flag silently.
 
+#### 4.1.1 Selected pin (2026-09-25)
+
+A source and registry review on 2026-09-25 selected the pin below. Nothing was
+compiled or run on a GPU. Write it to `deploy/runtimes/llamacpp-cuda.yaml` as
+given, then re-verify it offline before you rely on it:
+
+1. Clone `ggml-org/llama.cpp`. Confirm that `git merge-base --is-ancestor
+   6c84c7d5d8833c6e0df69628f75a0f599797934e e9f824d8c0f011662a742c9d15d4aa18a41e32c0`
+   exits 0.
+2. At `e9f824d`, confirm that `qwen4exp` appears in the model arch table and
+   that the server argument parser accepts every flag in `supported_flags`,
+   including the values the spec §8 argv uses.
+3. Confirm that both image digests resolve on Docker Hub, and that the child
+   digest is the `linux/amd64` entry of the index.
+
+If any check fails, leave `source_commit` empty and report it. Do not substitute
+another commit.
+
+```yaml
+schema_version: 1
+id: llamacpp-cuda
+engine: llamacpp
+
+source_repository: https://github.com/ggml-org/llama.cpp
+source_commit: e9f824d8c0f011662a742c9d15d4aa18a41e32c0
+source_commit_date_utc: "2026-09-25T08:36:35Z"
+source_ref_kind: master_commit      # not a tagged release
+image_digest: null                  # llama.cpp is built from source on the node
+
+build_image: docker.io/nvidia/cuda:12.8.1-devel-ubuntu24.04
+build_platform: linux/amd64
+build_image_digest: sha256:4b9ed5fa8361736996499f64ecebf25d4ec37ff56e4d11323ccde10aa36e0c43        # linux/amd64 manifest; pull by this
+build_image_index_digest: sha256:520292dbb4f755fd360766059e62956e9379485d9e073bbd2f6e3c20c270ed66  # multi-arch index; provenance only
+cuda_arch: [90, 120]
+cmake_args_by_arch:
+  "90": ["-DGGML_CUDA=ON", "-DCMAKE_CUDA_ARCHITECTURES=90"]
+  "120": ["-DGGML_CUDA=ON", "-DCMAKE_CUDA_ARCHITECTURES=120"]
+
+supported_flags:
+  - --model
+  - --alias
+  - --host
+  - --port
+  - --n-gpu-layers
+  - --override-tensor
+  - --ctx-size
+  - --parallel
+  - --no-kv-unified
+  - --no-context-shift
+  - --fit
+  - --flash-attn
+  - --cache-type-k
+  - --cache-type-v
+  - --batch-size
+  - --ubatch-size
+  - --ctx-checkpoints
+  - --cache-ram
+  - --jinja
+  - --metrics
+  - --slots
+  - --n-cpu-moe
+
+verification:
+  checked_utc: "2026-09-25"
+  method: >-
+    Source read at source_commit: model arch table (qwen4exp present) and
+    server argument parser (all supported_flags and the spec §8 values
+    accepted). Ancestry of the PR #27742 merge commit confirmed. Docker Hub
+    tag metadata read for both digests. No compile or GPU run.
+  qwen4exp_merge_commit: 6c84c7d5d8833c6e0df69628f75a0f599797934e
+  qwen4exp_merge_is_ancestor: true
+  cuda_decode_issue: https://github.com/ggml-org/llama.cpp/issues/28734
+  cuda_decode_status: unresolved
+  cuda_decode_note: >-
+    At source_commit the qwen4exp graph still expands scores across n_kv
+    before ggml_top_k, so the per-token decode cost grows with context.
+```
+
+Schema notes:
+
+- The runtime schema must define every key above, including `verification.*`,
+  `source_ref_kind`, `build_platform`, `build_image_index_digest` and
+  `cmake_args_by_arch`. The resolver still rejects any other key.
+- The bootstrap pulls `build_image@build_image_digest` and uses
+  `cmake_args_by_arch[<hardware cuda_arch>]`. It builds for the node's
+  architecture only. The resolver rejects a hardware `cuda_arch` that is
+  missing from `cuda_arch` or `cmake_args_by_arch`.
+- The resolver rejects an argv flag that is missing from `supported_flags`.
+- `--n-cpu-moe` is accepted by the parser. Nobody has checked that it matches
+  `qwen4exp` tensor names. Any placement that uses it stays `provisional: true`
+  until the §4.4 inspection or a smoke test shows the expected CPU/GPU split.
+- Because #28734 is unresolved, the evaluator runs the decode-depth probe
+  (§4.3). A later commit that fixes #28734 is a new runtime pin, and every
+  qualification recorded against this pin is invalidated.
+
 ### 4.2 Minimal profiles and resolver (handoff A, subset)
 
 Create the layout from spec §6, limited to what this experiment needs:
@@ -249,6 +344,12 @@ Required behaviour:
 - **Decode tasks**: at least some turns must require ≥512 completion tokens
   (for example, a structured incident summary), so early EOS cannot pass as a
   decode benchmark.
+- **Decode-depth probe (#28734)**: before the cohorts, run one session at N=1
+  with prompts of about 16,384, 65,536 and 129,024 rendered tokens. At each
+  depth, ask for ≥512 completion tokens and measure the decode rate from first
+  and last token timestamps, with at least 3 samples per depth. Report the
+  rate per depth and the slope. This probe is informational and has no pass or
+  fail verdict of its own. The §5 decode target is still judged on the cohorts.
 - **Metrics per turn**: queue time, TTFT, time to first visible answer token,
   reasoning and answer tokens separately, decode rate from real first/last
   token timestamps, total time, prepared vs reported prompt tokens, and

@@ -76,7 +76,12 @@ policy ceiling, and qualification reference. See spec sections 3, 6, and 8.
 
 Use the pinned repository, full revision, file bytes, and SHA-256 in the spec.
 Resolve and verify an immutable llama.cpp commit and image per required CUDA
-architecture. The runtime pin is intentionally pending; do not fabricate it.
+architecture. The runtime pin was selected on 2026-09-25 from a source review:
+llama.cpp `e9f824d`, built on the node from a digest-pinned CUDA 12.8.1 image.
+It has not been compiled or run on a GPU. Use and re-verify it exactly as
+[experiment plan §4.1.1](QWEN38-EXPERIMENT-PLAN.md) says; do not substitute
+another commit. Issue #28734, a long-context CUDA decode slowdown, is still
+unresolved at this pin.
 
 Acceptance:
 
