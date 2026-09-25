@@ -25,8 +25,41 @@ variable "phase" {
   default     = "off"
 
   validation {
-    condition     = contains(["off", "p0", "p1", "p2", "p3", "p4", "live4"], var.phase)
-    error_message = "phase must be one of: off, p0, p1, p2, p3, p4, live4."
+    condition     = contains(["off", "p0", "p1", "p2", "p3", "p4", "live4", "qwen38"], var.phase)
+    error_message = "phase must be one of: off, p0, p1, p2, p3, p4, live4, qwen38."
+  }
+}
+
+variable "qwen38_gpu" {
+  description = "GPU family for an isolated Qwen3.8 attempt. Required for phase qwen38."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = contains(["", "h200", "rtx"], var.qwen38_gpu)
+    error_message = "qwen38_gpu must be h200 or rtx (empty outside the qwen38 phase)."
+  }
+}
+
+variable "qwen38_model" {
+  description = "Model selection for an isolated Qwen3.8 attempt. Required for phase qwen38."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = contains(["", "base", "abliterated"], var.qwen38_model)
+    error_message = "qwen38_model must be base or abliterated (empty outside the qwen38 phase)."
+  }
+}
+
+variable "qwen38_sessions" {
+  description = "Full 131072-token slots for an isolated Qwen3.8 attempt."
+  type        = number
+  default     = 1
+
+  validation {
+    condition     = var.qwen38_sessions >= 1 && var.qwen38_sessions <= 4 && floor(var.qwen38_sessions) == var.qwen38_sessions
+    error_message = "qwen38_sessions must be an integer between 1 and 4; the hardware ceiling is checked per node."
   }
 }
 

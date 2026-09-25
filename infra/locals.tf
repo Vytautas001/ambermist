@@ -72,6 +72,27 @@ locals {
 
   spot_multiplier = 0.5 # Verda spot is exactly half on-demand
 
+  # Isolated Qwen3.8 attempt profiles. The launch-time selectors map to
+  # versioned YAML; artifact and runtime pins are not duplicated in HCL.
+  qwen38_model_profile = yamldecode(file("${path.module}/../deploy/models/${var.qwen38_model == "abliterated" ? "qwen38-abliterated-q4" : "qwen38-ud-q4kxl"}.yaml"))
+  qwen38_runtime       = yamldecode(file("${path.module}/../deploy/runtimes/llamacpp-cuda.yaml"))
+  qwen38_hardware      = yamldecode(file("${path.module}/../deploy/hardware/${var.qwen38_gpu == "rtx" ? "rtxpro6000" : "h200"}.yaml"))
+  qwen38_alias         = "qwen38-${local.qwen38_model_profile.id}"
+  qwen38_argv = concat(
+    [
+      "--model", "${local.weights_mount}/qwen38/${local.qwen38_model_profile.id}/${local.qwen38_model_profile.entry_file}",
+      "--alias", local.qwen38_alias, "--host", "127.0.0.1", "--port", "8001",
+    ],
+    local.qwen38_hardware.placement_args,
+    [
+      "--ctx-size", tostring(131072 * var.qwen38_sessions), "--parallel", tostring(var.qwen38_sessions),
+      "--no-kv-unified", "--no-context-shift", "--fit", "off",
+      "--flash-attn", "on", "--cache-type-k", "f16", "--cache-type-v", "f16",
+      "--batch-size", "512", "--ubatch-size", "128", "--ctx-checkpoints", "2",
+      "--cache-ram", "8192", "--jinja", "--metrics", "--slots",
+    ]
+  )
+
   # ---------------------------------------------------------------------------
   # Phases.
   #
@@ -82,6 +103,14 @@ locals {
   # ---------------------------------------------------------------------------
   phases = {
     off = {}
+
+    qwen38 = {
+      primary = {
+        role     = "qwen38", sku = local.qwen38_hardware.sku, tp = 1,
+        spot     = false, runtime = "llamacpp", model_id = local.qwen38_model_profile.id,
+        sessions = var.qwen38_sessions, alias = local.qwen38_alias, serve = true
+      }
+    }
 
     p0 = {
       # p0 and p1 intentionally share this identity. Select the SKU, TP and

@@ -61,8 +61,13 @@ resource "verda_instance" "gpu" {
     }
 
     precondition {
-      condition     = local.catalog[each.value.sku].vram * 0.92 >= each.value.wt_gb + each.value.kv_gb
-      error_message = "${each.value.sku} has ${local.catalog[each.value.sku].vram} GB VRAM (${format("%.1f", local.catalog[each.value.sku].vram * 0.92)} usable), too little for ${each.value.model}: ${each.value.wt_gb} GB weights + ${each.value.kv_gb} GB KV for ${var.sessions} sessions at ${each.value.ctx}. Move up local.node_ladder, or switch this role to the Int4 checkpoint."
+      condition     = try(each.value.runtime, "vllm") == "llamacpp" ? true : local.catalog[each.value.sku].vram * 0.92 >= each.value.wt_gb + each.value.kv_gb
+      error_message = try(each.value.runtime, "vllm") == "llamacpp" ? "The llama.cpp placement must be verified from loader logs." : "${each.value.sku} has ${local.catalog[each.value.sku].vram} GB VRAM (${format("%.1f", local.catalog[each.value.sku].vram * 0.92)} usable), too little for ${each.value.model}: ${each.value.wt_gb} GB weights + ${each.value.kv_gb} GB KV for ${var.sessions} sessions at ${each.value.ctx}. Move up local.node_ladder, or switch this role to the Int4 checkpoint."
+    }
+
+    precondition {
+      condition     = try(each.value.runtime, "vllm") != "llamacpp" || (var.qwen38_gpu != "" && var.qwen38_model != "" && each.value.sessions <= local.qwen38_hardware.session_ceiling)
+      error_message = "qwen38 requires GPU and MODEL selectors and sessions within the selected hardware ceiling."
     }
   }
 }
@@ -72,12 +77,15 @@ resource "verda_instance" "gpu" {
 resource "terraform_data" "instance_identity" {
   for_each = local.roles
 
-  input = {
+  input = merge({
     sku  = each.value.sku
     spot = each.value.spot
     role = each.value.role
     tp   = each.value.tp
-  }
+    }, try(each.value.runtime, "vllm") == "llamacpp" ? {
+    model_id = each.value.model_id
+    sessions = each.value.sessions
+  } : {})
 }
 
 # ---------------------------------------------------------------------------

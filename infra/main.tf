@@ -56,7 +56,25 @@ resource "verda_startup_script" "role" {
   }
 
   name = "${var.project}-${each.value.role}"
-  script = templatefile("${path.module}/scripts/startup.sh.tftpl", {
+  script = try(each.value.runtime, "vllm") == "llamacpp" ? templatefile("${path.module}/scripts/startup-llamacpp.sh.tftpl", {
+    model_id                 = local.qwen38_model_profile.id
+    model_repository         = local.qwen38_model_profile.repository
+    model_revision           = local.qwen38_model_profile.revision
+    model_entry_file         = local.qwen38_model_profile.entry_file
+    model_shards             = local.qwen38_model_profile.shards
+    model_size_bytes         = local.qwen38_model_profile.size_bytes
+    runtime_commit           = local.qwen38_runtime.source_commit
+    build_image              = local.qwen38_runtime.build_image
+    build_digest             = local.qwen38_runtime.build_image_digest
+    cuda_arch                = local.qwen38_hardware.cuda_arch
+    cmake_args               = local.qwen38_runtime.cmake_args_by_arch[tostring(local.qwen38_hardware.cuda_arch)]
+    sku                      = local.qwen38_hardware.sku
+    argv                     = local.qwen38_argv
+    sessions                 = each.value.sessions
+    alias                    = each.value.alias
+    weights_mount            = local.weights_mount
+    placement_is_provisional = local.qwen38_hardware.provisional
+    }) : templatefile("${path.module}/scripts/startup.sh.tftpl", {
     project           = var.project
     role              = each.value.role
     location          = var.location

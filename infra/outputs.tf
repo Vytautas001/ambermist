@@ -13,6 +13,9 @@ output "instances" {
   value = {
     for k, v in verda_instance.gpu : k => {
       role            = local.roles[k].role
+      runtime         = try(local.roles[k].runtime, "vllm")
+      alias           = try(local.roles[k].alias, null)
+      sessions        = try(local.roles[k].sessions, null)
       id              = v.id
       hostname        = v.hostname
       instance_type   = v.instance_type
@@ -24,7 +27,7 @@ output "instances" {
       gpu             = try(v.gpu.description, null)
       gpu_memory      = try(v.gpu_memory.size_in_gigabytes, null)
       ssh             = v.ip != null ? "ssh ubuntu@${v.ip}" : "(pending — run: terraform refresh)"
-      endpoint        = v.ip != null && local.roles[k].serve ? "http://${v.ip}:8000/v1" : null
+      endpoint        = v.ip != null && local.roles[k].serve ? (try(local.roles[k].runtime, "vllm") == "llamacpp" ? "http://127.0.0.1:8001/v1" : "http://${v.ip}:8000/v1") : null
     }
   }
 }
