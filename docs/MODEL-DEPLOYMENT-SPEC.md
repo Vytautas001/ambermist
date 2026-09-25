@@ -8,8 +8,10 @@ Date: 2026-09-24. See [ADR 0003](adr/0003-qwen38-gguf-fleet-serving.md) and the
 
 Implement deployment of `windowsxp811203/Qwen3.8-Flash-Next-Abliterated-GGUF`
 on independently qualified H200, H100, and RTX PRO 6000 Blackwell replicas.
-Measure comfortable long-context concurrency within the current session policy,
-then rehearse combined service for eight Blue Teams. Reuse the mechanism for
+Measure comfortable long-context concurrency within the current session policy
+and serve the maximum qualified sessions per node. The eight-team rehearsal is
+out of scope for now, and Qwen3.5 is archived rather than kept as a rollback
+([ADR 0005](adr/0005-scope-max-sessions-qwen35-archived.md)). Reuse the mechanism for
 subsequent models through explicit model, runtime, hardware, and workload profiles.
 
 There is **no monetary ceiling**. The hard fleet cap remains **one H200, one H100,
@@ -23,8 +25,8 @@ outside the current implementation scope. See [AGENTS.md](../AGENTS.md).
 
 Inference remains on Verda in Finland. Keep exercise scope in the system prompt,
 require nonempty authorized networks, and keep harness tools as range-bound stubs.
-This spec defines deployment and evaluation, including a reversible transition
-from the existing service; it does not claim a deployment has been performed.
+This spec defines deployment and evaluation. It does not claim a deployment has
+been performed.
 
 ### Context contract
 
@@ -72,8 +74,8 @@ CPU-embedding experiment. If the allowed SKU lacks required RAM, report the
 profile infeasible; these targets do not authorize a larger machine. These are
 provisional reservations, not verified model requirements. Increase them if measured peak
 memory, checkpoint copies, or page residency requires it. Allow 140 GB free on the
-weights volume for this artifact, plus runtime/build space and the retained
-rollback model. Evaluate disk capacity in bytes before downloading.
+weights volume for this artifact, plus runtime/build space and any other staged
+Qwen3.8 profile. Evaluate disk capacity in bytes before downloading.
 
 ## 3. Artifact and runtime
 
@@ -219,9 +221,7 @@ Suggested future layout (not implemented by this spec):
 
 ```text
 deploy/models/qwen38-abliterated-q4.yaml
-deploy/models/qwen35-gptq-int4.yaml
 deploy/runtimes/llamacpp-cuda.yaml
-deploy/runtimes/vllm-cuda.yaml
 deploy/hardware/{h200,h100,rtxpro6000}.yaml
 deploy/workloads/agentic-126k.yaml
 ops/model_deploy.py
@@ -275,8 +275,8 @@ Separate immutable machine acquisition from reversible serving configuration:
 3. `model_deploy.py plan` resolves profiles and reports missing pins/resources.
    `stage` downloads and verifies artifacts without stopping the active service.
    `activate` drains requests, stops the old runtime, starts the candidate locally,
-   and performs authenticated checks. `rollback` restores the previous manifest,
-   runtime, and service. These are proposed commands, not existing entrypoints.
+   and performs authenticated checks. `rollback` restores the previous Qwen3.8
+   manifest. If there is none, the node stays stopped and the operator is told. These are proposed commands, not existing entrypoints.
 4. Keep inference credentials in the existing root-owned mode-0600 node secret
    file. Pass API keys through the process environment, never argv, Terraform
    state, manifests, logs, or reports. Restrict local evaluation ports to SSH
@@ -287,18 +287,18 @@ Separate immutable machine acquisition from reversible serving configuration:
    normal activation. Do not lower `weights_footprint_gb` merely to pass a guard.
 6. Add runtime-neutral status, health, secret provisioning, and rollback handling.
    The current startup template, `provision_node_secrets.py`, and outputs assume
-   vLLM; both runtime adapters must satisfy these contracts. Preserve the existing
-   Qwen3.5 deployment as an explicit profile and rollback target.
+   vLLM. That vLLM code is archived: leave it unchanged. The llama.cpp adapter
+   must satisfy these contracts. There is no Qwen3.5 rollback target.
 7. Router configuration uses the actual backend engine, `redcell-qwen38` alias,
    qualified concurrency bounded by policy, and measured timeouts. Aliases follow
-   `redcell-<model>`; the Qwen3.5 rollback is `redcell-qwen35`. Verify LiteLLM
+   `redcell-<model>`. `redcell-qwen35` is reserved for a possible Qwen3.5 revival. Verify LiteLLM
    compatibility with llama.cpp instead of assuming `hosted_vllm` settings transfer. Pin sessions
    to replicas for cache reuse; retain full history in the client for recovery.
    Returning sessions to a different model requires an explicit model change.
    Set per-team admission to one initially, enforce each backend independently,
    and count White Cell traffic in the same pool. Queued work is not active
    capacity; expose bounded waits and overload errors. Retries must not duplicate
-   tool actions. Do not use automatic Qwen3.5/64k fallback for Qwen3.8/128k work.
+   tool actions. Never fall back automatically to another model or a smaller context.
 8. Reconcile held, unmanaged, and replacement-overlap GPU inventory alongside the
    Terraform planned-role guard. Prefer stable per-machine identities across
    phases; retain acquired capacity through rehearsal and live. Existing two-role
@@ -385,9 +385,8 @@ Required procedure:
 9. Repeat after any change in model, quantization, runtime, GPU SKU, offload,
    checkpoint/cache settings, or workload. Never infer an RTX/H100 qualification
    solely from H200 memory use. Test two RTX processes simultaneously if sharing
-   a host, then rehearse the combined fleet with eight independent team loops
-   and host-loss recovery. Apply per-replica limits even when queues or retries
-   are active. Report remaining measured capacity, not a full-fleet failover claim.
+   a host. Apply per-replica limits even when queues or retries are active. The
+   combined eight-team fleet rehearsal is out of scope (ADR 0005).
 
 Correctness must automatically verify all session markers, absence of another
 session's markers, follow-up continuity, and valid stub tool arguments. Handle
@@ -406,8 +405,9 @@ benchmark for any of these hosts.
 1. Define profile schemas, resolver, and immutable lock format. Reject bad units,
    missing hashes, unsupported combinations, and secrets in profile output.
 2. Implement runtime adapters and staging/activation/rollback. Prove a serving
-   profile change produces no instance/volume replacement and rollback restores
-   authenticated Qwen3.5 inference after a failed candidate start.
+   profile change produces no instance/volume replacement. Show that a failed
+   candidate start restores the previous Qwen3.8 profile, or leaves the node
+   stopped and reported.
 3. Implement workload-driven capacity evaluation and machine-readable reports.
    Router admission limits must use only a matching qualified report, bounded by
    the current session policy. Test backend/global/team limits and recovery.
@@ -425,7 +425,6 @@ infra and harness checks when those components are changed. This specification
 alone requires documentation/link review, not a provider apply or GPU benchmark.
 
 Completion evidence is a table of measured comfortable session counts for all
-three GPU types with reproducible manifests, plus combined eight-team rehearsal
-and degraded-capacity results. H200 loss leaves at most five provisional slots;
-there is no full eight-team N+1 guarantee. Until those runs exist, use section 2
+three GPU types with reproducible manifests, one row per node. Until those runs
+exist, use section 2
 only to plan trials; leave `qualified_sessions` unset.

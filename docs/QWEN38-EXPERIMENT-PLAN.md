@@ -1,6 +1,7 @@
 # Qwen3.8 H200 qualification experiment — plan for the coding agent
 
-Status: ready for execution by the coding agent (GPT Luna). Prepared 2026-09-25.
+Status: ready for execution by the coding agent (GPT Luna). Prepared 2026-09-25;
+artifact changed the same day to the Unsloth base GGUF (§1.1).
 Nothing in this plan has run yet. It authorizes **offline coding only**. Every
 live step waits for an explicit operator message naming its gate (for example
 `GO G1`). See [Gates](#3-gates-and-authority).
@@ -10,12 +11,22 @@ Read first, in order: [AGENTS.md](../AGENTS.md),
 [CAPACITY-RUNBOOK.md](CAPACITY-RUNBOOK.md) sections 2–4, and
 [IMPLEMENTATION-HANDOFF.md](IMPLEMENTATION-HANDOFF.md) packages A, C, D. If this
 plan and those documents disagree, the stricter rule wins; report the conflict.
+The one intended exception is the model artifact: §1.1 replaces the pin in
+AGENTS.md and spec §3 for this experiment.
+
+**Revised 2026-09-25 ([ADR 0005](adr/0005-scope-max-sessions-qwen35-archived.md)).**
+The legacy Qwen3.5/vLLM infrastructure is destroyed and archived. This
+experiment runs on a node provisioned by the
+[one-click plan](QWEN38-ONE-CLICK-PLAN.md) (`make qwen38 GPU=h200 MODEL=base`),
+which serves through the `redcell-llama` unit. Trials pause that unit and restore
+it afterwards. Nothing here stops or restores `redcell-vllm`. Implement the
+one-click path before the live gates.
 
 ## 1. Objective
 
 Answer one question with measured evidence: **how many 131,072-token sessions
-does the pinned Qwen3.8 Abliterated Q4_K_M GGUF serve comfortably on one H200
-under a pinned llama.cpp build, from N=1 up to the policy ceiling of 4?**
+does the pinned Unsloth Qwen3.8-Flash-Next UD-Q4_K_XL GGUF serve comfortably
+on one H200 under a pinned llama.cpp build, from N=1 up to the policy ceiling of 4?**
 
 The experiment produces:
 
@@ -27,6 +38,58 @@ The experiment produces:
 5. The H200 profile marked `qualified` (with `qualified_sessions = N_comfortable`)
    or `failed`, never "ready for traffic".
 
+### 1.1 Artifact for this experiment (operator decision, 2026-09-25)
+
+The operator changed the experiment artifact from the abliterated Q4_K_M to the
+Unsloth GGUF of the official base model. For this experiment, this pin
+**replaces** the artifact in [AGENTS.md](../AGENTS.md) "Selected model and
+runtime" and in spec §3. That difference is intended, so do not report it as a
+conflict. Every other rule in those documents still applies: runtime, placement,
+context, ceilings and hardware cap.
+
+```yaml
+id: qwen38-ud-q4kxl
+repository: unsloth/Qwen3.8-Flash-Next-GGUF
+revision: 38bb39ee97821de2c9009abb7e93950eec396e66
+format: gguf
+quantization: UD-Q4_K_XL          # Unsloth Dynamic, mixed precision; not Q4_K_M
+entry_file: UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf
+size_bytes: 111334654784          # sum of all shards (103.69 GiB)
+shards:
+  - file: UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf
+    size_bytes: 10946624
+    sha256: 4448186216b3af4cc558bbce2c3213f01608f8f8b2e5267a9767971dd3ec8082
+  - file: UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004.gguf
+    size_bytes: 49859583136
+    sha256: 3f342f1c1580473f1ee94ddd5b28206e8c07a70fa1a366f59d1d6c922919a6c9
+  - file: UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004.gguf
+    size_bytes: 49376141504
+    sha256: 56758f40269cad5cd9b0d3d6fbae0f40f6d5be6de49e4ab392dbe83157d9cbd3
+  - file: UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004.gguf
+    size_bytes: 12087983520
+    sha256: 753bda48b98ba4f1636134a90a967de1b2d3908a236c026e464777342e53510a
+license: qwen-community-1.0
+base_model: Qwen/Qwen3.8-Flash-Next
+```
+
+Pins were read from the
+[publisher metadata](https://huggingface.co/api/models/unsloth/Qwen3.8-Flash-Next-GGUF/revision/38bb39ee97821de2c9009abb7e93950eec396e66?blobs=true)
+on 2026-09-25. The weights were not downloaded. Notes for the implementation:
+
+- **Split artifact.** Download all four shards into one directory and verify
+  each shard's size and SHA-256. Pass `--model <entry_file>` to llama.cpp, which
+  then loads the other shards from the same directory. A missing or mismatched
+  shard fails `stage`.
+- **Text-only, no draft model.** The repo also contains `MTP/` draft files, a
+  vision projector and other quants. Do not download them.
+- **Metadata.** Check `qwen4exp.attention.compress_ratios` as in §4.4. If it is
+  wrong or missing, stop and report. Do not patch the file.
+- **Placement estimates.** The 60–65 GiB `W_gpu` sensitivity figure in spec §4
+  was derived for the older 119 GB Q4_K_M. Replace it with the value measured by
+  the inspection.
+- The abliterated artifact is **not** part of this experiment. A later switch
+  to it is described in §9.
+
 The H200 goes first because it is the only allowed GPU that fits the transformer
 weights with KV headroom (spec §2). The RTX and H100 experiments reuse the same
 tooling later under their own gates. They are **out of scope** here.
@@ -36,10 +99,11 @@ tooling later under their own gates. They are **out of scope** here.
 - Router/LiteLLM config, team keys, harness alias migration (handoff E and the
   alias row). The experiment uses a localhost trial alias `qwen38-test`.
 - Terraform refactors, inventory model, phase maps, `fleet_guard`, `locals.tf`
-  catalog (handoff B). No new tfvars is needed: `p0` already defaults to one
-  on-demand `1H200.141S.44V`.
+  catalog (handoff B). The only infra change is the `qwen38` phase from the
+  one-click plan.
 - Any normal/participant traffic, any context below 131,072 per slot, any
-  session count above 4, any other model/quant/publisher, any other GPU family.
+  session count above 4, any model/quant/publisher other than §1.1 (including
+  the abliterated standby in §9), any other GPU family.
 - Offensive tooling. Harness tools stay range-bound stubs; the tool check only
   parses calls and never dispatches them.
 
@@ -48,12 +112,14 @@ tooling later under their own gates. They are **out of scope** here.
 - No `infra/terraform.tfstate` exists in the working copies. Only a stale
   `.backup` exists. **Treat held inventory as unknown** until G0 reconciles it
   against the Verda account.
-- `infra/terraform.tfvars` sets `weights_volume_size_gb = 400`. The GGUF needs
-  ~140 GB free plus build space, alongside the Qwen3.5 rollback weights.
-- `make p0` boots the legacy Qwen3.5 GPTQ-Int4 on vLLM (`redcell-vllm` unit) with
-  the weights volume on NFS (`NVMe_Shared`). That service is the rollback target
-  for this experiment. It is **not** production. Interrupting it on a p0 node
-  still needs operator approval at G3.
+- `infra/terraform.tfvars` sets `weights_volume_size_gb = 400`. The GGUF shards
+  total ~111 GB; require size + 20 GiB free plus build space.
+- The legacy Qwen3.5/vLLM infrastructure is destroyed, and its code is archived
+  (ADR 0005). Do not use `make p0` for this experiment: it boots Qwen3.5 on vLLM.
+  The node comes from `make qwen38 GPU=h200 MODEL=base`. It serves the base
+  profile through `redcell-llama` on `127.0.0.1:8001`, with the weights volume
+  on NFS (`NVMe_Shared`). Pausing that unit for trials still needs operator
+  approval at G3.
 - The node secret file `/mnt/weights/.env` (root, 0600) holds `VLLM_API_KEY`.
   Reuse it. Do not create a second key or rename the variable (AGENTS.md).
 - `evals/results/` is gitignored. Raw reports stay out of git (§6).
@@ -67,9 +133,9 @@ tooling later under their own gates. They are **out of scope** here.
 |---|---|---|
 | — | Offline coding, tests, commits (§4) | Everything in §4 |
 | **G0** | Read-only account inventory + `ops/preflight.py` availability query | Prepare commands; nothing sent to Verda |
-| **G1** | Acquisition: operator runs or approves `tofu apply` for p0 H200 | Show `tofu plan` output for review |
+| **G1** | Acquisition: operator runs `make qwen38 GPU=h200 MODEL=base` | Show the `tofu plan` output for review |
 | **G2** | SSH to node; download/verify GGUF; build llama.cpp; inspect GGUF. No service stop | — |
-| **G3** | Stop `redcell-vllm`; run trials N=1→4; restore vLLM afterwards | — |
+| **G3** | Stop `redcell-llama`; run trials N=1→4; restore `redcell-llama` afterwards | — |
 | **G4** | Keep or release the node (operator decides; default **keep**) | Report cost-to-date |
 
 At each gate, stop and send the operator: what you will run, what it changes,
@@ -106,7 +172,7 @@ a flag silently.
 Create the layout from spec §6, limited to what this experiment needs:
 
 ```text
-deploy/models/qwen38-abliterated-q4.yaml   # repo, revision, file, size_bytes, sha256, license, template provenance
+deploy/models/qwen38-ud-q4kxl.yaml         # §1.1: repo, revision, entry_file, shards[{file,size_bytes,sha256}], license, template provenance
 deploy/runtimes/llamacpp-cuda.yaml         # commit, cuda_arch [90, 120], build flags, supported flags list
 deploy/hardware/h200.yaml                  # SKU 1H200.141S.44V, FIN site, policy_ceiling: 4, cuda_arch 90
 deploy/workloads/agentic-126k.yaml         # spec §6 schema + SLO targets from spec §5 + warm-cohort params (§4.3)
@@ -121,24 +187,33 @@ deploy/tests/                              # resolver tests
   `ctx_size = 131072 × N`, `parallel = N`, placement, and status `candidate`.
   It rejects unknown keys, missing hashes/pins, N < 1, N > policy ceiling,
   engine/arch mismatches, and any key matching `key|token|secret|password`.
-- `stage` (G2) runs over SSH. It downloads to `/mnt/weights/qwen38/` with resume,
-  checks size in bytes and SHA-256, and runs the GGUF inspection (4.4). It never
-  stops a service. It refuses to start if free disk is below `size_bytes` + 20 GiB.
+- `stage` (G2) runs over SSH. It downloads every shard to
+  `/mnt/weights/qwen38/<model id>/` with resume, checks each shard's size in
+  bytes and SHA-256, and runs the GGUF inspection (4.4). It never
+  stops a service. It refuses to start if free disk is below the
+  total `size_bytes` + 20 GiB.
 - `trial start --record R` (G3) copies the record to the node and starts
   `llama-server` under a transient unit (`systemd-run --unit=redcell-llama-trial`).
   A small wrapper reads `/mnt/weights/.env`, exports
   `LLAMA_API_KEY=$VLLM_API_KEY`, and `exec`s the argv from the JSON. It never
   evaluates profile strings as shell. It binds `127.0.0.1:8001` only, and it
-  refuses to start while `redcell-vllm` is active (the operator stops it at G3).
+  refuses to start while `redcell-llama` is active (the operator stops it at G3).
 - `trial stop` stops the transient unit and collects the server log.
-- `restore` starts `redcell-vllm` and confirms `/health`. It also confirms an
+- `restore` starts `redcell-llama` and confirms `/health`. It also confirms an
   authenticated `/v1/models`.
 
 Keep `activate`/`rollback` (handoff C) for later. Structure the code so they
 can reuse `stage` and the wrapper.
 
+The model schema lists shards, even for a one-file artifact (then `shards` has
+one entry). `entry_file` must be one of the shards. The argv passes
+`--model` as the staged path of `entry_file`. This keeps the abliterated profile
+in §9 expressible without a code change.
+
 Tests: bad keys, bad N, secret-shaped fields, deterministic hashes, and argv
-equality with spec §8 for N=1..4. Also verify that changing any input changes
+equality with spec §8 for N=1..4. Also: a missing shard hash, an `entry_file`
+not in `shards`, a shard-size total that differs from `size_bytes`, and a
+single-file fixture shaped like the §9 profile, which must resolve. Also verify that changing any input changes
 the record hash.
 
 ### 4.3 Capacity evaluator (handoff D, single replica)
@@ -215,8 +290,13 @@ Add `evals/inspect_gguf.py`. Use the `gguf-py` package from the **pinned**
 llama.cpp commit. It checks `qwen4exp.attention.compress_ratios` (4 at each
 full-attention layer, 0 elsewhere). It checks layer count, KV heads, head dim and
 full-attention layer count against spec §4. It also totals the tensor bytes that
-go to CPU (the `per_layer_token_embd` match) and to GPU. Write JSON. A metadata
-mismatch fails `stage`.
+go to CPU (the `per_layer_token_embd` match) and to GPU. Read the metadata from
+the first shard and total the tensors across all shards. Check
+`split.count` = 4 and the tensor count against the shard headers. Record the
+SHA-256 of the embedded `tokenizer.chat_template` and compare it with the
+template from the official `Qwen/Qwen3.8-Flash-Next` tokenizer config. That
+comparison is informational: report any difference for operator review, and do
+not fail on it. Write JSON. A metadata mismatch fails `stage`.
 
 Using the measured `W_gpu` from the inspection, print the spec §4 `N_memory`
 estimate. Label it an estimate. It never changes admission.
@@ -255,11 +335,11 @@ OpenTofu command (AGENTS.md). Use the existing SSH key mechanism from
 
 ### 5.2 G1: acquisition
 
-From `infra/`, run `tofu plan -var-file=phases/p0-bake.tfvars` and show the plan.
-It must create or keep exactly one H200 and keep the weights volume
-(`prevent_destroy`). It must not replace any existing resource. The **operator**
-applies. Afterwards, run `make fleet` and confirm `redcell-vllm` is healthy on
-the node (`ops/check_inference.py`).
+From `infra/`, run `tofu plan -var-file=phases/qwen38.tfvars -var qwen38_gpu=h200 -var qwen38_model=base`
+and show the plan. It must create or keep exactly one H200 and keep the weights
+volume (`prevent_destroy`). It must not replace any existing resource. The
+**operator** runs `make qwen38 GPU=h200 MODEL=base`. Afterwards, run
+`make fleet` and `make qwen38-status`, and confirm that `redcell-llama` is healthy.
 
 ### 5.3 G2: stage (no interruption)
 
@@ -272,9 +352,10 @@ any of these hold:
 - the CUDA toolkit does not support sm_90. Install one that matches the driver,
   and record its version.
 
-Then:
+Then (the one-click bootstrap may already have staged and built these; reuse
+them only if the hashes and `build.json` match):
 
-1. `model_deploy.py stage` downloads and verifies the GGUF, then runs the inspection.
+1. `model_deploy.py stage` downloads and verifies all four shards, then runs the inspection.
 2. Build the pinned llama.cpp with `-DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=90`,
    target `llama-server`, under `/mnt/weights/qwen38/llama.cpp-<sha>`. Save
    `git rev-parse HEAD`, compiler, CUDA, and cmake cache flags in `build.json`.
@@ -283,10 +364,10 @@ Then:
 
 ### 5.4 G3: trials
 
-Tell the operator that `redcell-vllm` will be down for the whole trial window
+Tell the operator that `redcell-llama` will be down for the whole trial window
 (estimate in §7). After `GO G3`:
 
-1. Save the current `redcell-vllm` unit and env hashes, then stop the unit.
+1. Save the current `redcell-llama` unit and env hashes, then stop the unit.
    Confirm GPU memory is released.
 2. For **N = 1, 2, 3, 4** in order:
    1. `model_deploy.py plan --sessions N`, then `trial start`.
@@ -306,8 +387,8 @@ Tell the operator that `redcell-vllm` will be down for the whole trial window
    spec §4 and the old H200 note §6: `--ubatch-size 64`; Q8 cache if the pinned
    build supports it for this arch; PLE on GPU as a separate comparison profile.
    Never fold tuned results into the baseline profile.
-5. `model_deploy.py restore` brings back `redcell-vllm`. Verify `/health` and
-   authenticated inference with `ops/check_inference.py`.
+5. `model_deploy.py restore` brings back `redcell-llama`. Verify `/health` and
+   authenticated inference with `make qwen38-status`.
 
 ### 5.5 G4: node disposition
 
@@ -350,7 +431,7 @@ last 100 journal lines, with secrets redacted.
 ## 7. Time and cost estimate
 
 These numbers are planning estimates, not measurements. Staging (download
-119 GB, build) takes 1–2 h. Each N takes about 1–1.5 h: the load from NFS plus
+111 GB in four shards, build) takes 1–2 h. Each N takes about 1–1.5 h: the load from NFS plus
 a soak of at least 30 min, dominated by 20+ cold ~129k prefills. With four N
 values and the repeat run, that is 6–8 h. Expect roughly **8–11 H200 hours
 (€30–41)**, plus retries. There is no budget ceiling, but report any overrun
@@ -363,8 +444,62 @@ Finish with:
 1. the commits (one per package in §4, plus the results summary);
 2. the tests run and their results;
 3. the gates passed and exactly what ran on the node;
-4. the evidence row: runtime pin | GGUF sha | `N_comfortable` / policy 4 |
+4. the evidence row: runtime pin | model id + revision + shard SHA-256 list | `N_comfortable` / policy 4 |
    report path | `qualified` or `failed`;
 5. open issues: missing flags, #28734 status, reasoning-budget exhaustion,
    RAM/NFS observations, and a recommendation for the next node (RTX or H100)
    or for tuning profiles.
+6. the chat-template comparison result from §4.4.
+
+## 9. Future model change: abliterated artifact (not in scope now)
+
+The operator may later decide that the exercise needs the refusal-removed
+artifact. It stays a **standby candidate**. It is never an automatic fallback,
+and Luna must not stage, profile or test it under this plan. Separately, the
+operator may deploy it as an unqualified attempt with `make qwen38
+MODEL=abliterated CONFIRM_ABLITERATED=yes`
+([QWEN38-ONE-CLICK-PLAN.md](QWEN38-ONE-CLICK-PLAN.md)). That is not this switch.
+
+```yaml
+id: qwen38-abliterated-q4
+repository: windowsxp811203/Qwen3.8-Flash-Next-Abliterated-GGUF
+revision: c3365c410baa29bdd3d7cc8cbc2bf9bee0de2f3a
+format: gguf
+quantization: Q4_K_M
+entry_file: Qwen3.8-Flash-Next-Abliterated-Q4_K_M.gguf
+size_bytes: 119150722112
+shards:
+  - file: Qwen3.8-Flash-Next-Abliterated-Q4_K_M.gguf
+    size_bytes: 119150722112
+    sha256: 324c85132e04654480ac93923f444b760b2950eb8c84a346dd0ec70e680ecde2
+license: qwen-community-1.0
+base_model: windowsxp811203/Qwen3.8-Flash-Next-Abliterated
+```
+
+The switch starts only on an explicit operator message naming it
+(`GO SWITCH-ABLITERATED`). The decision is recorded as an ADR. Then:
+
+1. **Provenance.** Re-read the publisher metadata at the pinned revision and
+   confirm the size and SHA-256 above. Stop if either changed. The publisher is
+   an anonymous account that has already re-uploaded once to fix metadata.
+2. **Profile.** Add `deploy/models/qwen38-abliterated-q4.yaml` from the block
+   above. §4.2 requires the resolver to handle it without code changes. If it
+   doesn't, fix that first.
+3. **Stage and inspect.** Run `stage` and the §4.4 inspection. Stage it
+   alongside the base artifact; never overwrite or delete it. Check disk first:
+   both artifacts plus build space must fit on the weights volume, or
+   stop and report.
+4. **Qualify again.** Run the full §5.4 ladder, N=1→4 plus the repeat, as a
+   new H200 qualification. Results are tied to the artifact hash, so the base
+   model's `N_comfortable` does **not** carry over. The weights are ~8 GB
+   larger, so expect a lower `N_memory`.
+5. **Compare.** Report the per-N metrics side by side with the base model's
+   report: latency, decode rate, marker recall, stub-call validity, and
+   reasoning-only or budget-exhaustion failures. The operator decides whether
+   any quality loss is acceptable.
+6. **Keep a rollback.** The base profile and its report stay qualified and
+   staged, as the immediate rollback for the abliterated profile. There is no
+   Qwen3.5 rollback (ADR 0005).
+7. **Documents.** Only after the operator accepts: update AGENTS.md "Selected
+   model and runtime", spec §3, and the H200 evidence row. Until then, nothing
+   routes traffic to the abliterated profile.

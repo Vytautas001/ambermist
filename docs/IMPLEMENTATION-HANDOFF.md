@@ -9,15 +9,23 @@ Read [AGENTS.md](../AGENTS.md), [ARCHITECTURE.md](ARCHITECTURE.md), and
 [capacity runbook](CAPACITY-RUNBOOK.md) before topology changes. The latest user
 request controls which part of this backlog to execute.
 
+**Scope ([ADR 0005](adr/0005-scope-max-sessions-qwen35-archived.md), 2026-09-25):**
+the goal is the maximum qualified sessions per node, up to its ceiling. The
+eight-team target is out of scope. Qwen3.5/vLLM is archived: its code stays
+unchanged, but it is not a rollback target. Where this backlog still mentions
+either of them, ADR 0005 takes precedence.
+
 For the first live step, the H200 qualification experiment, follow
 [QWEN38-EXPERIMENT-PLAN.md](QWEN38-EXPERIMENT-PLAN.md): it scopes packages A, C
-and D to one replica and defines the operator gates.
+and D to one replica and defines the operator gates. For operator-launched,
+unqualified single-node attempts (`make qwen38`), follow
+[QWEN38-ONE-CLICK-PLAN.md](QWEN38-ONE-CLICK-PLAN.md).
 
 ## 1. Outcome and invariants
 
 Implement portable, reversible serving of the selected Qwen3.8 Abliterated Q4_K_M
-GGUF with llama.cpp on the existing capped Verda fleet. Qualify each replica,
-then route eight full-context team conversations only if measurements support it.
+GGUF with llama.cpp on the existing capped Verda fleet. Qualify each node and
+serve the maximum full-context sessions it qualifies for, up to its ceiling.
 
 Keep these invariants throughout implementation:
 
@@ -29,7 +37,8 @@ Keep these invariants throughout implementation:
 - Provisional ceilings: H200 4, H100 1, RTX 2 per GPU. Enforce the smaller of
   policy and matching measured qualification; unknown qualification gets no
   normal traffic. Tests above these ceilings are outside this scope.
-- Preserve held machine identity, protected volumes, and explicit Qwen3.5 rollback.
+- Preserve held machine identity and protected volumes. Leave the archived
+  Qwen3.5/vLLM code unchanged; there is no Qwen3.5 rollback.
 - Keep tools as range-bound stubs and scope nonempty. No offensive tooling.
 - Secrets never enter profiles, locks, argv, state, test fixtures, or reports.
 
@@ -43,13 +52,13 @@ These findings come from repository inspection, not a live infrastructure audit.
 | `infra/main.tf` | Templates model/runtime into immutable startup scripts; defaults to 16 or 10 sequences | Separate machine acquisition from mutable serving manifests; derive slots from qualification |
 | `infra/instances.tf` | Fleet guard counts planned roles; VRAM check is nominal GB × 0.92 against Qwen3.5 estimates | Preserve role guard; also check provider-wide held/replacement totals and byte-based placement requirements |
 | `infra/variables.tf`, phase/experiment tfvars | Qwen3.5 model defaults and smaller-context fallback; `p3` is accepted but has no phase map | Migrate coherently; resolve phase validation mismatch without releasing capacity |
-| `infra/scripts/startup.sh.tftpl` | vLLM-specific launch and NFS-backed weights mount | Generic bootstrap and engine adapters; preserve mount/secret contracts |
+| `infra/scripts/startup.sh.tftpl` | vLLM-specific launch and NFS-backed weights mount | Archived (ADR 0005): leave unchanged. Add a separate llama.cpp bootstrap that reuses the mount/secret contracts ([one-click plan](QWEN38-ONE-CLICK-PLAN.md) §5) |
 | `ops/preflight.py` | Old FP8 preference ladder; explicit `--target-sku` branch checks stock but does not enforce the complete hardware policy | Validate exact allowlist/count/site for every acquisition path; never treat stock as policy approval |
 | `ops/provision_node_secrets.py`, `ops/check_inference.py`, infra outputs/Makefile | Assume vLLM unit, key/alias, and at most existing node roles | Runtime-neutral service/health/secret targets for all replicas |
-| `router/litellm.config.yaml`, `router/issue-team-keys.sh` | Two vLLM entries; automatic smaller-context fallback; three concurrent requests per key | Same-artifact/context replicas, per-backend admission, one active request per team initially, distinct rollback alias |
+| `router/litellm.config.yaml`, `router/issue-team-keys.sh` | Two vLLM entries; automatic smaller-context fallback; three concurrent requests per key | Same-artifact/context replicas, per-backend admission, one active request per team initially |
 | `harness/src/redcell/client.py`, `config.py`, `loop.py` | Default alias `redcell-adversary`; timeout/output/history/retry contracts need inspection | Support explicit model identity, token contract, recovery and queue behavior; preserve stubs and audit |
 | `evals/llama_two_slot_context.py` | Two fixed sessions and alias; sequential follow-ups; incomplete SLO/correctness gates | General capacity evaluator; fix exception path using unset/stale `follow` result |
-| Alias and env naming across `router/`, `ops/`, harness, `.env.example` | `redcell-adversary` alias; `VLLM_*`/`NODE_A_URL`/`NODE_B_URL` variables | Adopt `redcell-qwen38`/`redcell-qwen35`; introduce the target names in [.env.example](../.env.example) with the current names accepted until every reader and the node env file migrate together |
+| Alias and env naming across `router/`, `ops/`, harness, `.env.example` | `redcell-adversary` alias; `VLLM_*`/`NODE_A_URL`/`NODE_B_URL` variables | Adopt `redcell-qwen38` (`redcell-qwen35` stays reserved for a possible Qwen3.5 revival); introduce the target names in [.env.example](../.env.example) with the current names accepted until every reader and the node env file migrate together |
 | `infra/experiments/qwen38-rtx-test.tfvars` | Combined with `p0-bake.tfvars` it boots `standby_model` (Qwen3.5 GPTQ-Int4, vLLM), not Qwen3.8; Qwen3.8 is started by hand per the experiment doc | Replace with a profile-driven Qwen3.8 test target; until then it is not the Qwen3.8 infrastructure path |
 | `.github/workflows/harness.yml`, `infra.yml` | Trigger pushes on `main`, but the default branch is `master`, so direct pushes are not checked (`capacity.yml` was removed on 2026-09-24) | Fix the branch filter; keep only workflows that validate code |
 | `evals/runner.py` | Sequential legacy model comparison | Keep as optional comparison; never use as concurrent-capacity proof |
@@ -68,7 +77,6 @@ policy ceiling, and qualification reference. See spec sections 3, 6, and 8.
 Use the pinned repository, full revision, file bytes, and SHA-256 in the spec.
 Resolve and verify an immutable llama.cpp commit and image per required CUDA
 architecture. The runtime pin is intentionally pending; do not fabricate it.
-Include the Qwen3.5 GPTQ-Int4/vLLM rollback profile with its own context contract.
 
 Acceptance:
 
@@ -101,11 +109,14 @@ Acceptance:
 ### C. Stage, activate, and roll back serving profiles
 
 Implement `ops/model_deploy.py` with `plan`, `stage`, `activate`, and `rollback`.
-Use engine adapters for llama.cpp and legacy vLLM. Keep the protected node secret
+Use a llama.cpp engine adapter only. No vLLM adapter: Qwen3.5 is archived. Here
+`rollback` means going back to the previous **Qwen3.8** profile or manifest.
+Keep the protected node secret
 file and SSH mechanism; adapt health/secret provisioning and outputs consistently.
 Activation drains the selected replica, stops its old GPU process, starts the
 candidate, and checks authentication, discovery, arithmetic, and stub parsing.
-A failed candidate restores the prior service and manifest. Stage before stopping.
+A failed candidate restores the prior Qwen3.8 manifest if there is one.
+Otherwise it leaves the node stopped and reports. Stage before stopping.
 
 Acceptance:
 
@@ -115,8 +126,9 @@ Acceptance:
   exceeds the profile ceiling. CPU PLE placement is evidenced by loader output.
 - The dual-RTX variant restricts each process to its assigned GPU and validates
   combined host RAM/cache pressure; neither process sees an unintended GPU.
-- Failed start restores authenticated Qwen3.5 inference on the held instance.
-  This is explicit rollback with the old context contract, not silent failover.
+- A failed start restores the previous Qwen3.8 profile when one was active. If
+  none was, it leaves the node stopped and reports. It never falls back to
+  another model or a smaller context.
 - Test ports remain localhost-only. No credential appears in command logs or locks.
 
 ### D. Capacity evaluator and immutable reports
@@ -151,8 +163,9 @@ Pin the LiteLLM version and verify its llama.cpp integration and deployment-limi
 semantics. Generate eligible backends from matching qualified reports. Implement
 missing admission/affinity behavior explicitly if the router cannot supply it;
 do not invent a YAML option or mistake a per-key cap for a deployment semaphore.
-Use `redcell-qwen38` for the selected model and `redcell-qwen35` for the Qwen3.5
-rollback (convention `redcell-<model>`). Retire `redcell-adversary` everywhere.
+Use `redcell-qwen38` for the selected model (convention `redcell-<model>`). Do
+not create `redcell-qwen35`; that alias is reserved for a possible revival of the
+archived Qwen3.5. Retire `redcell-adversary` everywhere.
 
 Acceptance:
 
@@ -168,23 +181,22 @@ Acceptance:
 - Retry tests preserve turn/tool-call identity and avoid duplicate stub dispatch;
   do not replay partially completed actions blindly.
 
-### F. Combined rehearsal and operational documentation
+### F. Per-node readiness and operational documentation
 
-Qualify H200 first, then the other allowed hosts independently. Rehearse the
-whole fleet and inject host loss. Update docs with actual results and limitations.
+Qualify H200 first, then the other allowed hosts independently. Update docs with
+actual results and limitations. The eight-team combined rehearsal and the
+failover arithmetic are out of scope (ADR 0005).
 
 Acceptance:
 
-- Eight-team readiness is claimed only after eight simultaneous full-context
-  conversations pass. White Cell competes for the same bounded capacity.
-- Rehearsal reports normal and degraded admission. At provisional ceilings,
-  H200 loss leaves five, single-RTX loss seven, and H100 loss eight slots.
+- Each node's readiness is claimed only after its qualified number of
+  simultaneous full-context sessions passes. White Cell competes for the same
+  bounded capacity.
 - Record shared storage/router/network outage behavior and cold replay latency;
   do not claim redundant GPUs remove these failure domains.
 - Preserve license/participant-use assessment with release records. No public
   or third-party exposure is inferred from an isolated technical test.
-- Keep held capacity through rehearsal/live; release only at the exercise's end
-  under the operator's instruction.
+- Release a node only when the operator says to.
 
 ## 4. Validation and completion evidence
 
@@ -206,4 +218,3 @@ remaining operational gates, and this evidence table filled from real reports:
 | H200 | Pending | Unset | Pending | Candidate |
 | H100 | Pending | Unset | Pending | Candidate |
 | RTX PRO 6000 | Pending | Unset | Pending | Candidate |
-| Combined eight-team fleet | Pending | Unset | Pending | Candidate |

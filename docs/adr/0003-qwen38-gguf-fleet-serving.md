@@ -1,6 +1,8 @@
 # ADR 0003 — Qwen3.8 GGUF on independently qualified fleet replicas
 
 Status: accepted design; implementation and capacity qualification pending.
+Amended by [ADR 0005](0005-scope-max-sessions-qwen35-archived.md) (2026-09-25): the
+eight-team target is deferred, and Qwen3.5 is archived rather than a rollback.
 Date: 2026-09-24.
 Supersedes: ADR 0001's model selection and ADR 0002's Qwen3.5 primary/standby
 serving topology and automatic smaller-context failover. Keeps ADR 0002's hardware

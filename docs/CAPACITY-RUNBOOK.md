@@ -4,6 +4,13 @@ Status: operating requirements for the selected Qwen3.8 design; implementation
 migration and qualification pending. Updated 2026-09-24. Read
 [ARCHITECTURE.md](ARCHITECTURE.md) and [the handoff](IMPLEMENTATION-HANDOFF.md).
 
+> **Scope update, 2026-09-25 ([ADR 0005](adr/0005-scope-max-sessions-qwen35-archived.md)).**
+> The goal is the maximum qualified sessions per node, up to its ceiling. The
+> eight-team target is out of scope for now: the eight-team routing, failover
+> tables and rehearsal below are deferred, not required. Qwen3.5/vLLM is
+> archived and is not a rollback target. Where this document says otherwise,
+> ADR 0005 takes precedence.
+
 ## 1. Constraints and current state
 
 There is no monetary budget ceiling. Never hold more than **1x H200 + 1x H100 +
@@ -16,7 +23,8 @@ replicas, with 131,072 tokens per slot. Provisional ceilings are H200 4, H100 1,
 and RTX 2 per GPU. No ceiling is a capacity result. GPU stock, model feasibility,
 and comfortable serving capacity are three separate checks.
 
-Current `make p4` still requests the legacy Qwen3.5 dual-RTX primary/H200 standby.
+The legacy Qwen3.5 infrastructure has been destroyed, and its code is archived
+(ADR 0005). Current `make p4` still requests the legacy Qwen3.5 dual-RTX primary/H200 standby.
 `make live4` still configures a legacy single-RTX service with excessive sequence
 limits relative to the new policy. Neither target implements this architecture.
 Do not run them to obtain a Qwen3.8 deployment. The old smaller-context automatic
@@ -96,8 +104,8 @@ implementation handoff before treating them as operational commands.
 
 The required lifecycle is:
 
-1. Snapshot the current service manifest/runtime identity and keep its rollback
-   artifacts and credentials available. Inspect remaining storage in bytes.
+1. If a Qwen3.8 profile is already serving, snapshot its manifest and runtime
+   identity so it can be restored. Inspect remaining storage in bytes.
 2. Stage the pinned GGUF and runtime; verify hashes, tensor metadata, host RAM,
    GPU placement plan, and disk margin before draining the current replica.
 3. Drain and stop only the selected replica's old GPU process. Start the candidate
@@ -105,11 +113,10 @@ The required lifecycle is:
 4. Check authentication, discovery, template/tokenizer, arithmetic, and stub tool
    parsing. Confirm exact context per slot and tensor placement in loader logs.
 5. Qualify the exact profile; only then admit normal traffic within measured and
-   policy limits. On failure restore the previous manifest and service.
+   policy limits. On failure, restore the previous Qwen3.8 manifest if there is
+   one. Otherwise leave the node stopped and report.
 
-Switching a full H200 from Qwen3.5 to Qwen3.8 may require a service interruption;
-there is no spare second H200 for simultaneous migration. Coordinate the drain
-with the exercise operator. Do not fit both runtimes by shrinking the context.
+Do not fit two profiles on one GPU by shrinking the context.
 
 The existing weights volume uses NFS (`NVMe_Shared`). Measure concurrent load and
 CPU-PLE residency; do not assume local-NVMe performance or cross-site attachment.
@@ -117,6 +124,9 @@ Retain the protected volume and avoid concurrent cache writes. Any separate
 storage migration needs a reviewed copy/verification plan.
 
 ## 5. Failure handling during rehearsal/live
+
+The eight-team figures in this section are deferred (ADR 0005). Until then, apply
+the same rules per node.
 
 First remove the unhealthy replica from admission and compute the remaining
 **qualified** capacity. Notify White Cell of queued or paused generations.
@@ -135,10 +145,10 @@ capacity may be lower. Replay full transcripts only to healthy same-artifact,
 same-context replicas with admission space; replay has a cold-prefill cost. Do
 not blindly retry partial completions or completed tool actions.
 
-Never send a 128k conversation to the old Qwen3.5/64k service as automatic
-failover. If the operator selects that rollback service, announce the model and
-context change and use a separate workload/new session or explicit compaction
-policy. Record the decision in the audit trail.
+Never fail over automatically to another model or a smaller context. Qwen3.5
+is archived. If the operator ever revives it, that is an explicit model change:
+announce it, and use a separate workload or new session. Record the decision in
+the audit trail.
 
 A 10–15 minute recovery objective is a planning target to rehearse, not a measured
 promise. Recheck inventory and preflight before replacing a failed machine; do
@@ -151,12 +161,12 @@ Before rehearsal/live:
 - [ ] Actual inventory fits the hardware cap; balance and per-site stock checked
 - [ ] Selected runtime, artifact, and profile identities are immutable and verified
 - [ ] Exact per-replica reports support the desired full-context concurrency
-- [ ] Combined eight-team test passes, or reduced concurrency is explicitly agreed
+- [ ] Each node's qualified session count is recorded (the eight-team test is deferred, ADR 0005)
 - [ ] Router/server/team limits agree; White Cell consumes the same capacity pool
 - [ ] Host-loss and shared-dependency recovery rehearsed with complete transcripts
 - [ ] Scope/stub behavior, authenticated endpoints, EU audit retention verified
 - [ ] Model license applicability to the participant arrangement recorded
-- [ ] Rollback artifacts remain accessible; held machines survive serving changes
+- [ ] The previous Qwen3.8 profile stays staged; held machines survive serving changes
 
 Keep acquired machines through rehearsal and live. Do not use `make off` between
 those stages. After the operator ends the exercise, release intended instances

@@ -13,9 +13,15 @@ is not a request to implement code, provision machines, or switch a live service
    known implementation gaps, and acceptance criteria.
 4. [Capacity runbook](docs/CAPACITY-RUNBOOK.md): required before topology work.
 
-Status as of 2026-09-24: the Qwen3.8 target is selected; implementation and capacity
-qualification are pending. Existing Qwen3.5/vLLM defaults are legacy behavior,
-not the desired new model. Planned paths in the spec/handoff do not exist yet.
+Status as of 2026-09-25: the Qwen3.8 target is selected; implementation and capacity
+qualification are pending. Planned paths in the spec/handoff do not exist yet.
+
+Scope ([ADR 0005](docs/adr/0005-scope-max-sessions-qwen35-archived.md)): the goal
+is the maximum qualified sessions per node, up to its policy ceiling. The
+eight-team target is out of scope for now. Qwen3.5/vLLM is **archived**: its code
+stays in the repository unchanged, for reference. It is not a rollback target.
+Do not build a Qwen3.5 rollback, adapter or alias unless the operator explicitly
+decides to revive it.
 
 ## Hard constraints
 
@@ -59,12 +65,11 @@ qualification means no normal traffic. Current 4/1/2 ceilings are not benchmarks
 raise them only through an explicit session-policy revision and measured evidence.
 Do not exceed them in this implementation scope. Keep the hardware cap unchanged.
 
-The target is independent replicas of the same Qwen3.8 artifact/context: H200,
-H100, and two RTX replicas. A dual-RTX host may run two GPU-isolated processes
-only after combined host-resource qualification. Nine ceiling slots do not
-provide eight-team N+1 failover; H200 loss leaves at most five. Queue/pause excess
-work without losing history. Qwen3.5/64k is explicit rollback, not automatic
-fallback for a Qwen3.8/128k conversation.
+The target is independent Qwen3.8 nodes (H200, H100, RTX). Each serves the most
+full-context sessions it qualifies for, up to its ceiling. A dual-RTX host may
+run two GPU-isolated processes only after combined host-resource qualification.
+Queue or pause excess work without losing history. No fallback to another model
+or a smaller context: a failed node serves nothing until the operator acts.
 
 ## Selected model and runtime
 
@@ -84,12 +89,13 @@ fallback for a Qwen3.8/128k conversation.
 
 Use the handoff's ordered tasks when asked to code. Keep model/runtime settings
 in validated versioned profiles and generated manifests, not model-name branches
-in Terraform. Preserve the Qwen3.5 service as a rollback profile during migration.
+in Terraform. Leave the archived Qwen3.5/vLLM code unchanged; do not extend it.
 Reject unknown profile keys, missing immutable pins, unsupported combinations,
 insufficient resources, and stale qualification. Keep secrets out of profiles.
 
 Naming and configuration: public model aliases follow `redcell-<model>`:
-`redcell-qwen38` (selected) and `redcell-qwen35` (explicit rollback). The legacy
+`redcell-qwen38` (selected). `redcell-qwen35` is reserved, and used only if the
+operator revives the archived Qwen3.5. The legacy
 `redcell-adversary` alias is retired; replace it in the harness default, router,
 key issuance, ops checks, and docs. `.env` holds credentials and per-deployment
 values in the order of [.env.example](.env.example); pins, context, and session
@@ -103,7 +109,8 @@ The legacy limits 16/10/12 and three requests per team are migration defects.
 Add meaningful tests for any serving-slot or router path that could exceed a cap.
 
 Do not run commands merely because they appear in an experiment document. Those
-files contain historical procedures, not authorisation to interrupt the service.
+files contain historical procedures, not authorisation to act. Steps in them that
+stop or restore `redcell-vllm` are obsolete (ADR 0005).
 
 ## Environment and verification
 

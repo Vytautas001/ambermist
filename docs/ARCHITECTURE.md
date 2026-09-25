@@ -3,6 +3,13 @@
 Status: selected target design; implementation and capacity qualification pending.
 Reviewed: 2026-09-24. Decision: [ADR 0003](adr/0003-qwen38-gguf-fleet-serving.md).
 
+> **Scope update, 2026-09-25 ([ADR 0005](adr/0005-scope-max-sessions-qwen35-archived.md)).**
+> The goal is the maximum qualified sessions per node, up to its ceiling. The
+> eight-team target is out of scope for now: the eight-team routing, failover
+> tables and rehearsal below are deferred, not required. Qwen3.5/vLLM is
+> archived and is not a rollback target. Where this document says otherwise,
+> ADR 0005 takes precedence.
+
 This design replaces the Qwen3.5/FP8 and B200 recommendations previously in this
 file. The exercise has eight Blue Teams, EU-resident inference on Verda in
 Finland, and a fixed GPU fleet. There is **no monetary budget ceiling**.
@@ -21,7 +28,7 @@ contracts. Neither document is evidence that the new service is deployed.
 | Review finding | Decision |
 |---|---|
 | The former B200 recommendation and €500 cost model violate current constraints | Use only the fleet below; prices are operational metadata |
-| Existing defaults select Qwen3.5 and vLLM | Select the requested Qwen3.8 GGUF with llama.cpp; retain the recorded Qwen3.5 service for explicit rollback |
+| Existing defaults select Qwen3.5 and vLLM | Select the requested Qwen3.8 GGUF with llama.cpp. Qwen3.5 is archived, not a rollback (ADR 0005) |
 | The old 12 GiB KV estimate belongs to Qwen3.5 with FP8 cache | Recalculate for Qwen3.8 F16 attention/indexer caches and measure recurrent state and runtime allocations |
 | The GGUF exceeds single H100/RTX VRAM | Start with the PLE embedding tensor on CPU and verify exact placement, RAM, and latency |
 | A large primary plus a smaller-context standby cannot transparently serve eight full-context sessions | Use independently qualified replicas of the same artifact and context, with admission limits per replica |
@@ -65,10 +72,9 @@ means no normal traffic. Larger trials require an explicit revision of the
 session policy and then evidence before rollout. The current coding scope does
 not authorize exceeding 4/1/2 per GPU or increasing the hardware cap.
 
-Eight simultaneous team generations are the target. A White Cell generation
-also consumes a slot; it is not free overhead. If the measured fleet provides
-fewer than eight comfortable slots, report that the target is unmet and use an
-explicit queued/reduced-concurrency exercise mode. Do not add GPUs to make it fit.
+The current target is the maximum number of qualified sessions per node (ADR 0005).
+The eight-team target is deferred. A White Cell generation also consumes a slot;
+it is not free overhead. Do not add GPUs to reach any team count.
 
 ## 3. Selected model and runtime
 
@@ -184,7 +190,8 @@ Routing requirements:
   counted as active full-context capacity; bounded waits and queue delay are
   visible in metrics and errors.
 - Public aliases follow `redcell-<model>`: `redcell-qwen38` for the selected
-  service, `redcell-qwen35` for the explicit Qwen3.5 rollback. The legacy
+  service. `redcell-qwen35` is reserved for a possible revival of the archived
+  Qwen3.5. The legacy
   `redcell-adversary` alias is retired and must not be reused. Validate llama.cpp OpenAI-compatible API integration
   with the pinned LiteLLM version. A global/per-key `max_parallel_requests`
   setting alone is not a per-backend capacity guarantee.
@@ -195,7 +202,7 @@ Routing requirements:
   Do not combine partial completions from different attempts. Preserve request,
   turn, and tool-call identifiers in the audit trail.
 
-### Failure capacity at the provisional ceilings
+### Failure capacity at the provisional ceilings (deferred, ADR 0005)
 
 | Failure | Remaining slots | Consequence for eight active teams |
 |---|---:|---|
@@ -262,8 +269,9 @@ arrivals. Include at least 100 measured turns, 20 cold full-context requests, an
 If the ceiling passes, report it as a tested bound under policy, not the model's
 physical maximum. Record failures and zero-capacity results honestly.
 
-Rehearsal must demonstrate eight simultaneous resident conversations if claiming
-the eight-team target, per-replica admission, transcript recovery after host loss,
+Each node's readiness requires its qualified number of simultaneous resident
+conversations. The eight-team claim is deferred (ADR 0005). Also required:
+per-replica admission, transcript recovery after host loss,
 and explicit queued behavior when capacity drops. No memory-only estimate or
 short arithmetic smoke test can approve the release.
 
