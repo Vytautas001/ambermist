@@ -34,7 +34,12 @@ help:
 	@grep -E '^[a-z0-9-]+:.*?##' $(MAKEFILE_LIST) | sed 's/:.*##/\t/' | column -t -s "$$(printf '\t')"
 
 init: ## terraform init
-	$(TF) init
+	@if find .terraform/providers -type f -name 'terraform-provider-verda*' -print -quit 2>/dev/null | grep -q .; then \
+		echo "Using locally installed Verda provider"; \
+		$(TF) init -plugin-dir=.terraform/providers $(TF_ARGS); \
+	else \
+		$(TF) init $(TF_ARGS); \
+	fi
 
 fmt: ## rewrite HCL to canonical format
 	$(TF) fmt -recursive
