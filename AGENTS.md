@@ -10,12 +10,8 @@ restore it wholesale.
 
 ## Hard constraints
 
-- **Inference on Verda, Finland only.** No other provider, region, or hosted model.
 - **Fleet cap:** at most 1× H200, 1× H100, 2× RTX PRO 6000 GPUs, counting every
   held node. No other GPU families. Don't add hardware to make something fit.
-- **Full context:** 131,072 tokens per session. Never shrink context or fall
-  back to another model silently.
-- **Stub tools only.** No real offensive tooling. Reject empty scope.
 - **Secrets:** never print or commit `.env`, keys, state, or secret-bearing
   output. Load credentials with `set -a; source .env; set +a`.
 - **Held capacity:** don't destroy or replace running instances or the weights

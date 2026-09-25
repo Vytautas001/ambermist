@@ -9,35 +9,15 @@ Status of each fact: **verified** (checked against a source or run), **decided**
 
 ## Decisions (still in force)
 
-- **Provider: Verda, Finland only.** EU-resident inference; no US region or
-  hosted-model fallback. Terraform/OpenTofu state stays local. *(decided)*
-- **No monetary budget ceiling. The hardware fleet is the limit:** at most
-  1× H200 (`1H200.141S.44V`), 1× H100 (`1H100.80S.30V`), 2× RTX PRO 6000 GPUs
-  (`1RTXPRO6000.30V` ×2 or `2RTXPRO6000.60V` ×1). No B200/B300/GB300, A100,
-  L40S, or larger allocations. Count every held node, including replacement
-  overlap. *(decided)*
-- **B200 relaxation rejected on cost** (€5.532 vs €3.728/GPU/h for H200). Do not
-  re-propose it. *(decided)*
 - **Scope: maximum qualified sessions per node**, not an eight-team target
   (deferred). Admitted sessions = `min(policy ceiling, measured capacity)`.
   Provisional ceilings: H200 4, H100 1, RTX 2 per GPU. *(decided)*
-- **Qwen3.5/vLLM is dead.** Infrastructure destroyed; not a rollback target. A
-  failed Qwen3.8 node serves nothing: no automatic fallback to another model
-  or a smaller context. *(decided)*
 - **Harness tools are range-bound stubs.** No real offensive tooling; empty
   `in_scope_networks` must be rejected; scope lives in the system prompt. *(decided)*
 - **Model license:** Qwen Community License 1.0 (not Apache). Applicability to
   participant service must be assessed and recorded. *(decided, assessment pending)*
 
 ## Model artifact (verified against publisher metadata 2026-09-24)
-
-```yaml
-repository: windowsxp811203/Qwen3.8-Flash-Next-Abliterated-GGUF
-revision:   c3365c410baa29bdd3d7cc8cbc2bf9bee0de2f3a
-file:       Qwen3.8-Flash-Next-Abliterated-Q4_K_M.gguf
-size_bytes: 119150722112          # 110.97 GiB
-sha256:     324c85132e04654480ac93923f444b760b2950eb8c84a346dd0ec70e680ecde2
-```
 
 - Pin the revision: an earlier upload had wrong sparse-attention metadata. Check
   `qwen4exp.attention.compress_ratios` = 4 on full-attention layers, 0 elsewhere.
