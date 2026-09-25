@@ -1,0 +1,6 @@
+id: h200
+sku: 1H200.141S.44V
+cuda_arch: 90
+session_ceiling: 4
+placement_args: ["--n-gpu-layers", "all", "--override-tensor", "per_layer_token_embd=CPU"]
+provisional: false

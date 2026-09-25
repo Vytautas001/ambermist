@@ -1,0 +1,6 @@
+id: rtxpro6000
+sku: 1RTXPRO6000.30V
+cuda_arch: 120
+session_ceiling: 2
+placement_args: ["--n-gpu-layers", "all", "--override-tensor", "per_layer_token_embd=CPU", "--n-cpu-moe", "12"]
+provisional: true
