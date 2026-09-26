@@ -1,0 +1,6 @@
+owner = "your-name"
+ssh_public_keys = {
+  operator = "ssh-ed25519 AAAA... you@host"
+}
+# Whole ISP ranges; see plan section 4.3 (risk 20).
+admin_cidrs = ["193.219.12.0/23", "188.69.0.0/17", "88.118.128.0/17", "85.206.0.0/18", "78.56.0.0/14"]

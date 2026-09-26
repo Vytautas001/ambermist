@@ -1,0 +1,28 @@
+#!/bin/bash
+# Firewall only. No secrets: this script is stored in plaintext in the Verda API and in state.
+set -eu
+if ! command -v nft >/dev/null 2>&1; then
+  apt-get update
+  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends nftables
+fi
+cat > /etc/nftables.conf <<'NFT'
+# Never "flush ruleset": that would also wipe Docker's tables.
+table inet amb
+delete table inet amb
+table inet amb {
+  set admin_pub { type ipv4_addr; flags interval; elements = { ${join(", ", admin_cidrs)} } }
+
+  chain input {
+    type filter hook input priority filter; policy drop;
+    iif lo accept
+    ct state established,related accept
+    ct state invalid drop
+    icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, nd-router-advert } accept
+    udp sport 67 udp dport 68 accept
+    ip saddr @admin_pub tcp dport { 22, 8080 } accept
+  }
+  chain forward { type filter hook forward priority filter; policy drop; }
+}
+NFT
+nft -f /etc/nftables.conf
+systemctl enable nftables

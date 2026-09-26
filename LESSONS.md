@@ -34,7 +34,7 @@ Status of each fact: **verified** (checked against a source or run), **decided**
 - `qwen4exp` support merged upstream in PR #27742 (merge commit
   `6c84c7d5d8833c6e0df69628f75a0f599797934e`). The publisher's "needs open PR"
   note is stale.
-- Selected pin (source-read 2026-09-25, **never compiled or run on a GPU**):
+- Selected pin (source-read 2026-09-25; compiled and run on an H200 2026-09-26, see "Phase 1 first light"):
   `e9f824d8c0f011662a742c9d15d4aa18a41e32c0`. Build image
   `nvidia/cuda:12.8.1-devel-ubuntu24.04@sha256:4b9ed5fa8361736996499f64ecebf25d4ec37ff56e4d11323ccde10aa36e0c43`.
 - CUDA arch: `90` for H100/H200, `120` for RTX PRO 6000 Blackwell. Build per node arch.
@@ -114,7 +114,7 @@ tensors to CPU. Each change is a new profile that needs requalification.
   release sessions from a barrier; check `/slots` for overlap and that no
   session sees another's markers. See `archive/attempt-1:evals/llama_two_slot_context.py`.
 - Only recorded run: 2026-09-24, FIN-02 H200 served Qwen3.5-122B GPTQ-Int4 on
-  vLLM 0.28.0 at 64k context; smoke checks passed. **Qwen3.8 has never been run.**
+  vLLM 0.28.0 at 64k context; smoke checks passed. Qwen3.8 first ran 2026-09-26 (see "Phase 1 first light").
 
 ## What went wrong last time
 
@@ -126,3 +126,49 @@ tensors to CPU. Each change is a new profile that needs requalification.
   lives only in the archive tag.
 - Model names were hard-coded through Terraform, router, and scripts; switching
   models touched everything. Keep model/runtime choice out of infrastructure code.
+
+## Phase 1 first light (2026-09-26, all *verified* by running it)
+
+Result: pin builds, model loads and serves on one spot H200; T0 passes; **T1 does not
+reliably pass** (below). Nothing was tuned to change the T1 result.
+
+- **Site and capacity:** FIN-02, spot (`use_spot = true`), no reclaim during the ~28 min
+  run. By 08:21 UTC FIN-02 showed no H200 at all; FIN-03 still had spot and on-demand.
+  API price fields for the SKU: 4.593 (on-demand) / 2.297 (spot), currency not labelled.
+- **Image and login:** `24.04.cuda12.9.docker` exists for this SKU. Login user is `root`
+  (key from `ssh_key_ids`). The startup script (nftables) finished about a minute after
+  first SSH login, so `inet amb` was not loaded at the very first login.
+- **Host:** 1× H200, 143,771 MiB, driver 580.178.04, 167 GiB RAM (SKU says 44 vCPU, 170 GB).
+  Verda's OS-volume minimum not tested (60 GiB accepted).
+- **Volumes:** the 128 GiB NVMe volume shows up as `/dev/vdb` (127 GiB usable), blank, and
+  `/dev/disk/by-id/virtio-<last 12 hex of the volume id>` points to it. `mkfs` guard by
+  size worked. `on_destroy = delete_permanently` is the provider default for the OS volume,
+  yet a **detached `ambermist-h200-os` (60 GiB) remained after `tofu destroy`**; needs
+  `fleet-check.py --reap-os`.
+- **Times:** llama.cpp build 277 s (parallel with the download); model download plus SHA
+  check 1,124 s (~30 MB/s, 111 GB); `/health` 200 about 15 s after start; packages 7 s.
+- **T0:** all 4 shards match; `general.architecture = qwen4exp`; `compress_ratios` only
+  0 and 4, **12 layers with 4**; `llama-server --version` shows `e9f824d`.
+- **Loader log** (needs `-lv 5`; the default verbosity-3 log omits the loader lines
+  entirely): `offloaded 49/49 layers to GPU`; `n_ctx = 65536`, `n_ctx_seq = 16384`,
+  4 slots, `kv_unified = false`; no fit adjustment or context reduction. Buffers:
+  CUDA0 model 78,056 MiB, KV 1,536 + 192 MiB, recurrent state 450 MiB, compute 263 MiB.
+  **27.5 GiB stays in CPU-mapped memory:** `per_layer_token_embd.weight` (27,465 MiB) plus
+  644 MiB. That is the default at the pin, without `--override-tensor`. `nvidia-smi`
+  memory.used: **81,107 MiB** (not the brief's ~119 GB). Host page cache ~123 GiB after load.
+  Checkpoint spam: `erasing old context checkpoint` warnings appear on every request with
+  `--ctx-checkpoints 2`.
+- **T1 (7 runs of 5+5 tool rounds, streaming and not):** 401 without key, `/health` 200,
+  `reasoner` listed, 6×7 = 42 in every run: all pass. Tool
+  rounds: **66 of 70 parsed correctly; 4 skipped the tool call** (in turn 1 the model
+  answers in plain text such as "The temperature at EFHK is not available", after
+  reasoning "Need use tool... Already did"). The skips are in both modes. No raw tool
+  markup ever appeared in `content`, and no wrong arguments (0 of 66). Only 3 of the 7
+  runs met "5 of 5 parse", so **T1 fails as written** (~6% per tool round).
+  Response shape: `reasoning_content` present in every response; `content` is `""`
+  when non-streaming with a tool call and `null` when streaming.
+  Raw results: `~/ambermist-runs/2026-09-26/` (JSON), node logs in `node/` there.
+- **Not answered:** whether the skip rate depends on the template, `--reasoning-*`
+  settings, `tool_choice`, or is just this model. Not tried, per the task's stop rules.
+- **Reclaim recovery:** untested (no reclaim happened).
+- **GPU time:** instance created 07:54 UTC, destroyed 08:21 UTC, about 0.46 h of spot H200.
