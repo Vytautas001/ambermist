@@ -1,6 +1,6 @@
 # ambermist
 
-A self-hosted llama.cpp endpoint (Qwen3.8-Flash-Next, UD-Q4_K_XL) on one Verda H200.
+A self-hosted llama.cpp endpoint (Qwen3.8-Flash-Next Uncensored, Q4_K_M) on one Verda H200.
 This README describes how spin-up works **as of Phase 1** (first light: serve on loopback,
 test through an SSH tunnel). The design is in [docs/inference-tier-plan.md](docs/inference-tier-plan.md),
 the Phase 1 task in [docs/phase-1-first-light.md](docs/phase-1-first-light.md), and measured
@@ -159,8 +159,8 @@ ops/provision.sh <public_ip>
 | Stage | What it does |
 | :-- | :-- |
 | `packages` | apt packages; prints GPU, driver, and RAM. |
-| `disks` | Mounts the volume by label `amb-model` at `/srv/models`. Formats only if exactly one blank 128 GiB disk exists; otherwise aborts. |
-| `model` + `build` | Run in parallel. `model`: resumable download of 4 shards, SHA-256 checked against `node/pins/qwen38-ud-q4kxl.sha256`. `build`: llama.cpp at the pinned commit in a CUDA container; fails if `--version` doesn't show the pin. |
+| `disks` | Mounts the volume by label `amb-model` at `/srv/models`. Formats only if exactly one blank 140 GiB disk exists; otherwise aborts. |
+| `model` + `build` | Run in parallel. `model`: resumable download of 3 shards, SHA-256 checked against `node/pins/qwen38-uncensored-q4km.sha256`. `build`: llama.cpp at the pinned commit in a CUDA container; fails if `--version` doesn't show the pin. |
 | `t0` | Checks GGUF metadata (`qwen4exp`, `compress_ratios` only 0 and 4) and the server version. |
 | `serve` | Starts llama-server as the transient unit `llama-server` on `127.0.0.1:8080`, waits for `/health`. |
 

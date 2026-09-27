@@ -16,11 +16,11 @@ Read [LESSONS.md](../LESSONS.md) first. This plan builds on it and does not repe
 ## 1. Executive summary
 
 **Approach.** One Verda `1H200.141S.44V` instance runs `llama-server` (llama.cpp pinned at
-`e9f824d8`), serving `unsloth/Qwen3.8-Flash-Next-GGUF` UD-Q4_K_XL with 4 slots of 16,384
-tokens. The instance is disposable. Two OpenTofu stacks keep it (`compute`) apart from
-three block volumes (`storage`: model, build, logs). Each volume has a `keep_*` flag that
-decides whether teardown destroys it. A warm start reattaches the volumes, skips the
-111 GB download and the build, and serves again in about 10–20 min `[ASSUMPTION]`.
+`e9f824d8`), serving `orcarouter/Qwen3.8-Flash-Next-Uncensored-GGUF` Q4_K_M with 4 slots of
+16,384 tokens. The instance is disposable. Two OpenTofu stacks keep it (`compute`) apart
+from three block volumes (`storage`: model, build, logs). Each volume has a `keep_*` flag
+that decides whether teardown destroys it. A warm start reattaches the volumes, skips the
+~119 GB download and the build, and serves again in about 10–20 min `[ASSUMPTION]`.
 Callers reach the endpoint on the node's public IP, `http://<public_ip>:8080/v1`, with a
 bearer key, and only from `admin_cidrs`. Once everything else is proven, Phase 6 moves
 the endpoint behind Tailscale (§2.6).
@@ -381,12 +381,12 @@ UDP; nothing inbound. The Phase 6 open questions are in Q12.
 | Tier | Mount | Size | Contents and growth | Snapshot / backup |
 | :-- | :-- | :-- | :-- | :-- |
 | OS | `/` | 60 GiB `[VERIFY minimum]` | Image (~20 GB), CUDA devel build image (~9 GB), apt cache. Doesn't grow. | None |
-| Model | `/srv/models` | 128 GiB | 103.7 GiB of shards plus ~24 GiB free. Only a different model or pin changes it. To replace a bad shard, delete it first, then download, so no extra headroom is needed. | None. The source of truth is the Hugging Face revision plus the hashes. The retained volume is the hedge against the revision disappearing. |
+| Model | `/srv/models` | 140 GiB (operator override, 2026-09-27; module default `128`) | 111.0 GiB of shards (`qwen38-uncensored-q4km`, 3 shards) plus ~29 GiB free. Only a different model or pin changes it. To replace a bad shard, delete it first, then download, so no extra headroom is needed. | None. The source of truth is the Hugging Face revision plus the hashes. The retained volume is the hedge against the revision disappearing. |
 | Build | `/srv/build` | 20 GiB | Blobless source clone (~0.5 GB), build tree (3–5 GB), output of 2 builds (current and previous) at ~1.5 GB each. Growth is bounded by pruning to 2 builds. | None. Rebuilt from the pin. |
 | Logs | `/srv/logs` | 10 GiB | Rotated logs (≤3.5 GiB worst case, §6.5), Prometheus (capped at 2 GB), test output. | `ops/logs-pull.sh` copies it to `~/ambermist-runs/<instance>-<date>/` before every `down`; keep 90 days locally `[ASSUMPTION]`. |
 | Tofu state | workstation | small | — | Each `make` target first copies `infra/*/terraform.tfstate` to `~/.local/share/ambermist/state-backups/` and keeps the last 20. |
 
-The volume sizes must stay distinct: 128, 20, and 10 GiB. Size is the fallback identity
+The volume sizes must stay distinct: 140, 20, and 10 GiB. Size is the fallback identity
 when a blank disk is formatted (step 16).
 
 **Re-applying when a volume already exists.** The storage stack plans no changes.
@@ -414,7 +414,14 @@ Verda's trash for 96 h and are still charged (LESSONS.md).
 
 **Growing a volume.** Don't edit `*_volume_size_gib` on its own: size is ForceNew in the
 provider, and the edit **destroys the data**. The procedure is:
-1. Resize through the API (`PUT /v1/volumes`, `size`) `[VERIFY: works while attached]`.
+1. Resize through the API: `PUT /v1/volumes` (not `/v1/volumes/{id}`) with body
+   `{"id": "<volume-id>", "action": "resize", "size": <new-gib>}`, bearer token from
+   `POST /v1/oauth2/token` (client-credentials grant, same as `ops/fleet-check.py`).
+   Returns `202` with a null body; re-`GET /v1/volumes/{id}` to confirm the new `size`.
+   Verified working while `detached` (2026-09-27); attached is still `[VERIFY]`. Traced
+   from the `terraform-provider-verda` binary's embedded `verdacloud-sdk-go` build info
+   (`VolumeService.ResizeVolume`, `v1.4.0/pkg/verda/volumes.go`) since the provider treats
+   `size` as ForceNew and never calls it itself.
 2. Set the variable to the new size.
 3. Run `tofu apply -refresh-only`.
 4. Confirm the plan shows no changes.
@@ -519,7 +526,7 @@ node/                       # copied to /opt/ambermist; independent of the provi
   bin/fetch-model.sh  bin/build-llama.sh  bin/preflight-serve.sh
   pins/llama.cpp.conf       # LLAMA_SHA, QWEN4EXP_MERGE, BUILD_IMAGE, CUDA_ARCH
   pins/model.conf           # MODEL_ID, HF_REPO, HF_REVISION, ENTRY_FILE
-  pins/qwen38-ud-q4kxl.sha256  # "<sha256>  <bytes>  <repo path>" x4 (from archive/attempt-1)
+  pins/qwen38-uncensored-q4km.sha256  # "<sha256>  <bytes>  <repo path>" x3
   serving.conf              # llama-server settings (§6.1); non-secret
   etc/                      # systemd units, nginx, logrotate, prometheus
 ops/
@@ -562,7 +569,7 @@ Tooling: OpenTofu ≥ 1.8 and `verda-cloud/verda ~> 1.1` (1.1.3 was the latest o
 | :-- | :-- | :-- | :-- |
 | `project` | string | `"ambermist"` | Name prefix. Validation: `^[a-z][a-z0-9-]{1,18}$`. |
 | `location` | string | none | Picked from H200 availability until the model volume exists, then fixed to its site (Q5; Phase 1 task, step 3). Volumes are site-bound. Validation: one of `FIN-01`, `FIN-02`, `FIN-03`. |
-| `model_volume_size_gib` | number | `128` | ForceNew; see §3.2 "Growing a volume". Validation: `>= 120`. |
+| `model_volume_size_gib` | number | `128` | ForceNew; see §3.2 "Growing a volume". Validation: `>= 120`. Operator value (2026-09-27): `140`, via `TF_VAR_model_volume_size_gib` in `.env`. |
 | `build_volume_size_gib` | number | `20` | |
 | `logs_volume_size_gib` | number | `10` | |
 | `keep_model_volume` | bool | `true` | Teardown keeps the model volume. |
@@ -760,9 +767,12 @@ the behavior stated. Where a command is given, use it as-is.
    base URL is known only after `make up` (`api_url`).
 6. Fill in `infra/storage/terraform.tfvars` (location) and
    `infra/compute/terraform.tfvars` (owner, SSH keys, `admin_cidrs`).
-7. Copy the model manifest from the archive into `node/pins/`:
-   `git show archive/attempt-1:deploy/models/qwen38-ud-q4kxl.yaml` → `qwen38-ud-q4kxl.sha256`.
-   Copy the runtime pin from LESSONS.md into `node/pins/llama.cpp.conf`.
+7. Build the model manifest in `node/pins/` from the pinned HF revision: authenticate with
+   `HF_TOKEN` (the repo is gated — request access on the repo page first, `403` means not
+   yet granted), fetch `GET /api/models/<HF_REPO>/tree/main?recursive=true`, and write each
+   shard's `lfs.oid`, `size`, and `path` as `<sha256>  <bytes>  <repo path>` into
+   `qwen38-uncensored-q4km.sha256`. Copy the runtime pin from LESSONS.md into
+   `node/pins/llama.cpp.conf`.
 8. `cd infra && make init && make preflight`. Preflight checks:
    - credentials, and that the balance is above €50 `[ASSUMPTION threshold]`;
    - no other H200 running in the account (fleet cap);
@@ -882,7 +892,7 @@ the behavior stated. Where a command is given, use it as-is.
     python3 -m venv /srv/build/gguf-venv
     /srv/build/gguf-venv/bin/pip install -q /srv/build/src/llama.cpp/gguf-py
     /srv/build/gguf-venv/bin/gguf-dump --json --json-array --no-tensors \
-      /srv/models/qwen38-ud-q4kxl/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf \
+      /srv/models/qwen38-uncensored-q4km/Qwen3.8-Flash-Next-Uncensored-Q4_K_M-00001-of-00003.gguf \
       > /srv/logs/bootstrap/gguf-meta.json
     jq -e '.metadata["general.architecture"].value == "qwen4exp"' /srv/logs/bootstrap/gguf-meta.json
     jq -e '[.metadata["qwen4exp.attention.compress_ratios"].value[]] | all(. == 0 or . == 4)
@@ -968,7 +978,7 @@ the behavior stated. Where a command is given, use it as-is.
 
 ```bash
 /srv/build/current/bin/llama-server \
-  --model /srv/models/qwen38-ud-q4kxl/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf \
+  --model /srv/models/qwen38-uncensored-q4km/Qwen3.8-Flash-Next-Uncensored-Q4_K_M-00001-of-00003.gguf \
   --alias reasoner \
   --host 127.0.0.1 --port 8081 \
   --api-key-file /etc/ambermist/llama-api-keys \

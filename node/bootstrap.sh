@@ -3,8 +3,8 @@
 set -euo pipefail
 stage=${1:?usage: bootstrap.sh <packages|disks|model|build|t0|serve>}
 ROOT=/opt/ambermist
-MODEL_SIZE_BYTES=$((128 * 1024 * 1024 * 1024))
-MODEL_DIR=/srv/models/qwen38-ud-q4kxl
+MODEL_SIZE_BYTES=$((140 * 1024 * 1024 * 1024))
+MODEL_DIR=/srv/models/qwen38-uncensored-q4km
 
 mkdir -p /srv/build /srv/logs/bootstrap /srv/logs/llama
 
