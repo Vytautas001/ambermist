@@ -15,9 +15,8 @@ resource "terraform_data" "identity" {
 }
 
 resource "verda_ssh_key" "op" {
-  for_each   = var.ssh_public_keys
-  name       = "${var.project}-${each.key}"
-  public_key = each.value
+  name       = "${var.project}-operator"
+  public_key = trimspace(file(pathexpand(var.ssh_public_key_path)))
 }
 
 resource "verda_startup_script" "boot" {
@@ -36,7 +35,7 @@ resource "verda_instance" "node" {
   description       = "project=${var.project};stack=inference;owner=${var.owner};managed-by=opentofu"
   location          = local.location
   is_spot           = var.use_spot
-  ssh_key_ids       = [for k in verda_ssh_key.op : k.id]
+  ssh_key_ids       = [verda_ssh_key.op.id]
   startup_script_id = verda_startup_script.boot.id
 
   os_volume = {

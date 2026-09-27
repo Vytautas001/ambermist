@@ -11,7 +11,8 @@ if [[ -z ${AMB_API_KEY:-} || -z ${HF_TOKEN:-} ]]; then
 fi
 : "${AMB_API_KEY:?}" "${HF_TOKEN:?}"
 
-SSH=(ssh -i "${SSH_KEY:-$HOME/.ssh/verda}" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new
+key=${SSH_KEY:?set SSH_KEY in .env}
+SSH=(ssh -i "$key" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new
      -o ServerAliveInterval=30 -o ConnectTimeout=10 "root@$ip")
 stages=("$@")
 [[ ${#stages[@]} -gt 0 ]] || stages=(packages disks model+build t0 serve)
@@ -47,4 +48,4 @@ for st in "${stages[@]}"; do
     run_stage "$st"
   fi
 done
-echo "provision: done. Tunnel: ssh -i ~/.ssh/verda -N -L 8080:127.0.0.1:8080 root@$ip"
+echo "provision: done. Tunnel: ssh -i $key -N -L 8080:127.0.0.1:8080 root@$ip"

@@ -31,8 +31,9 @@ variable "os_volume_size_gib" {
   default = 60
 }
 
-variable "ssh_public_keys" {
-  type = map(string)
+variable "ssh_public_key_path" {
+  type        = string
+  description = "Path to the operator's SSH public key file (.pub); registered with Verda and installed on the instance."
 }
 
 variable "admin_cidrs" {
