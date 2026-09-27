@@ -2,9 +2,13 @@
 
 Self-hosted, OpenAI-compatible LLM endpoint on one Verda H200, served by llama.cpp.
 
-Status: **plan, 2026-09-25. None of this has been built or run.** Phase 1 is being built
-from [phase-1-first-light.md](phase-1-first-light.md), which cuts its scope. For Phase 1,
-that document wins wherever the two differ.
+Status: **plan, 2026-09-25.** Phases 1–3 were built and run on 2026-09-27; what was
+measured is in LESSONS.md. Phase 1 was built from
+[phase-1-first-light.md](phase-1-first-light.md), which cuts its scope. For Phase 1, that
+document wins wherever the two differ.
+**Dropped (operator decision, 2026-09-27): Prometheus, node_exporter, the metric timers,
+the metrics key, `--metrics`, and `make status`.** Ignore every remaining mention of them
+below (ports 9090/9100, §6.6 queries, T6 port lists, Tailscale binds).
 Labels: `[ASSUMPTION]` means chosen without evidence; replace it with a measurement or a
 decision. `[VERIFY]` means check it before the step that depends on it. Facts marked
 *verified* were checked on 2026-09-25 against the named source.
@@ -59,7 +63,7 @@ prices, 2026-09, in LESSONS.md).
 | 0 | Decisions made, account prepared | Q4 answered; fleet check clean and site picked (Phase 1 task, step 3) | 0 |
 | 1 | First light: model served on loopback | T0 and T1 pass through an SSH tunnel | 1–2 h |
 | 2 | Public API, allowlisted | T1 passes against the public IP from `admin_cidrs`; T6 clean | 1 h |
-| 3 | nginx front, supervision, observability | T4 passes; metrics visible in Prometheus; T6 rerun with the nginx checks | 1 h |
+| 3 | nginx front, supervision, logs | T4 passes; T6 rerun with the nginx checks | 1 h |
 | 4 | Lifecycle automation | T5 and T8 pass; audit clean | 1–2 h |
 | 5 | Acceptance | T2, T3, T7 pass; contract numbers filled in (§2.2) | 1–2 h |
 | 6 | Tailscale (§2.6), only after Phase 5 passes | T1 passes over Tailscale; public 8080 closed; T4d, T5, T6 rerun | 1 h |
@@ -927,19 +931,16 @@ the behavior stated. Where a command is given, use it as-is.
 27. **Gate:** from a host inside `admin_cidrs`, T1 passes against
     `http://<public_ip>:8080/v1`, and T6 is clean.
 
-**Phase 3: supervision and observability.**
+**Phase 3: supervision and logs.**
 
 28. Put nginx in front of llama-server (§6.3):
     - `apt-get install nginx`, remove the default site, and install the `ambermist` site.
     - Set `LLAMA_HOST=127.0.0.1` and `LLAMA_PORT=8081` in `serving.conf`, restart
       llama-server, then start nginx on port 8080. Callers keep the same URL.
 
-    Then install the healthcheck timer, the logrotate rules and hourly timer, Prometheus,
-    node_exporter, and the two textfile metric timers (§6.4–§6.6). The healthcheck and
-    Prometheus use llama-server on `127.0.0.1:8081`; the error-rate metric reads nginx's
-    access log.
-29. **Gate:** T4 passes, the §6.6 queries return data, and T6 passes again with the
-    nginx checks.
+    Then install the healthcheck timer and the logrotate rules and hourly timer
+    (§6.4–§6.5). The healthcheck uses llama-server on `127.0.0.1:8081`.
+29. **Gate:** T4 passes, and T6 passes again with the nginx checks.
 
 **Phase 4: lifecycle automation.**
 
@@ -987,7 +988,7 @@ the behavior stated. Where a command is given, use it as-is.
   --n-gpu-layers all --fit off \
   --flash-attn on \
   --ctx-checkpoints 2 \
-  --metrics --slots --no-webui \
+  --slots --no-webui \
   --log-timestamps --log-prefix
 ```
 
@@ -1003,7 +1004,7 @@ the behavior stated. Where a command is given, use it as-is.
 | `--n-gpu-layers all --fit off` | Everything goes on the GPU, and `--fit` (on by default) can't change unset parameters on its own. Any automatic reduction counts as a failure (LESSONS). |
 | `--flash-attn on` | Makes memory use deterministic (the default is `auto`). If the architecture doesn't support it, the server fails loudly instead of falling back. |
 | `--ctx-checkpoints 2` | From the recorded baseline in LESSONS. The default of 32 costs memory per slot. |
-| `--metrics --slots` | `/metrics` for Prometheus (off by default); `/slots` for T2. Both need a key, and from Phase 3 nginx doesn't expose them. |
+| `--slots` | `/slots` for T2. Needs a key, and from Phase 3 nginx doesn't expose it. `--metrics` is dropped with Prometheus. |
 | `--no-webui` | Less exposed surface. The web UI is on by default at the pin, and its assets are public paths. |
 
 Placement: the starting profile keeps everything on the GPU. At 4 × 16,384 tokens, KV
@@ -1041,7 +1042,7 @@ ExecStart=/srv/build/current/bin/llama-server --model ${MODEL_PATH} --alias ${LL
   --host ${LLAMA_HOST} --port ${LLAMA_PORT} --api-key-file /etc/ambermist/llama-api-keys --jinja \
   --ctx-size ${LLAMA_CTX} --parallel ${LLAMA_SLOTS} --no-kv-unified --no-context-shift \
   --n-gpu-layers all --fit off --flash-attn on --ctx-checkpoints 2 \
-  --metrics --slots --no-webui --log-timestamps --log-prefix
+  --slots --no-webui --log-timestamps --log-prefix
 Restart=on-failure
 RestartSec=10
 TimeoutStopSec=30
@@ -1173,61 +1174,18 @@ that `maxsize` takes effect:
 }
 ```
 
-Worst case this uses about 3.5 GiB, plus Prometheus's 2 GB cap, on the 10 GiB logs
-volume.
+Worst case this uses about 3.5 GiB on the 10 GiB logs volume.
 
 ### 6.6 Observability
 
-| Signal | Source | Where it goes |
-| :-- | :-- | :-- |
-| Request log: time, client, path, status, latency, bytes | nginx JSON access log | `/srv/logs/nginx/access.json.log` |
-| Per-request tokens and timing (`prompt eval time`, `eval time`, logged at info level; *verified* in `server-context.cpp`) | llama-server log | `/srv/logs/llama/server.log` |
-| Token throughput and queue depth | `/metrics`: `llamacpp:prompt_tokens_total`, `llamacpp:tokens_predicted_total`, `llamacpp:predicted_tokens_seconds`, `llamacpp:requests_processing`, `llamacpp:requests_deferred`, `llamacpp:n_busy_slots_per_decode` | Prometheus |
-| GPU utilization, memory, temperature, power, up/down | `metrics-gpu.sh` every 15 s (`nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw --format=csv,noheader,nounits`) → node_exporter textfile `amb_gpu_*` | Prometheus |
-| Error rate | `metrics-http.sh` every 60 s: requests in the last 60 s by status code, from the access log → `amb_http_requests_last_minute{code="…"}` | Prometheus |
-| Host (CPU, RAM, disk, network) | node_exporter on `127.0.0.1:9100` | Prometheus |
+Logs only; Prometheus, node_exporter, and the metric timers were dropped (operator
+decision, 2026-09-27).
 
-Prometheus uses the Ubuntu package. `/etc/default/prometheus`:
-
-```
-ARGS="--web.listen-address=127.0.0.1:9090 --storage.tsdb.path=/srv/logs/prometheus \
-      --storage.tsdb.retention.time=15d --storage.tsdb.retention.size=2GB"
-```
-
-`/etc/default/prometheus-node-exporter` (the package default listens on all interfaces):
-
-```
-ARGS="--web.listen-address=127.0.0.1:9100 \
-      --collector.textfile.directory=/var/lib/prometheus/node-exporter"
-```
-
-`metrics-gpu.sh` and `metrics-http.sh` write `*.prom` files into that directory. Each
-writes a temp file and renames it, so node_exporter never reads a partial file.
-
-`/etc/prometheus/prometheus.yml`:
-
-```yaml
-global: { scrape_interval: 15s }
-scrape_configs:
-  - job_name: llama
-    authorization: { type: Bearer, credentials_file: /etc/ambermist/metrics-key }
-    static_configs: [{ targets: ["127.0.0.1:8081"] }]
-  - job_name: node
-    static_configs: [{ targets: ["127.0.0.1:9100"] }]
-```
-
-`make status` runs these queries over SSH, against `http://127.0.0.1:9090/api/v1/query` on
-the node:
-
-```
-rate(llamacpp:tokens_predicted_total[5m])            # aggregate generation tok/s
-rate(llamacpp:prompt_tokens_total[5m])               # aggregate prefill tok/s
-llamacpp:requests_processing
-llamacpp:requests_deferred                           # > 0 means the queue is in use
-amb_gpu_utilization_percent
-amb_gpu_memory_used_mib
-sum(amb_http_requests_last_minute{code=~"5.."}) / clamp_min(sum(amb_http_requests_last_minute), 1)
-```
+| Signal | Source |
+| :-- | :-- |
+| Request log: time, client, path, status, latency, bytes (no bodies) | nginx JSON access log, `/srv/logs/nginx/access.json.log` |
+| Per-request tokens and timing (`prompt eval time`, `eval time`, info level; *verified* in `server-context.cpp`) | `/srv/logs/llama/server.log` |
+| Health-check restarts | journal, tag `amb-health` |
 
 No alerting or Grafana is planned: the tier runs only while someone is using it.
 
@@ -1449,7 +1407,7 @@ Phase 3. "Contract" means
 - From a host inside `admin_cidrs`: the same scan shows only 22 and 8080 open.
 - On the node, `ss -ltnup` shows only sshd (22) and the API listener on 8080 beyond
   127.0.0.1. The API listener is llama-server in Phase 2 and nginx from Phase 3, when
-  8081, 9090, and 9100 appear on 127.0.0.1 only.
+  8081 appears on 127.0.0.1 only.
 - sshd refuses password logins: `ssh -o PreferredAuthentications=password,keyboard-interactive root@<public_ip>`
   fails without a password prompt.
 - Phase 2: without a key, `POST /v1/chat/completions`, `/slots`, and `/metrics` return

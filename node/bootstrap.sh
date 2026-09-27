@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Usage: bootstrap.sh <packages|disks|model|build|t0|serve|nginx|observe>. Every stage is safe to rerun.
+# Usage: bootstrap.sh <packages|tailscale|disks|model|build|t0|serve|nginx>. Every stage is safe to rerun.
 set -euo pipefail
-stage=${1:?usage: bootstrap.sh <packages|disks|model|build|t0|serve|nginx|observe>}
+stage=${1:?usage: bootstrap.sh <packages|tailscale|disks|model|build|t0|serve|nginx>}
 ROOT=/opt/ambermist
 MODEL_SIZE_BYTES=$((140 * 1024 * 1024 * 1024))
 MODEL_DIR=/srv/models/qwen38-uncensored-q4km
@@ -12,7 +12,7 @@ mkdir -p /srv/build /srv/logs/bootstrap /srv/logs/llama
 install_etc() { local p; for p; do install -D -m 0644 "$ROOT/etc/$p" "/etc/$p"; done; }
 
 # The boot script loads the firewall about a minute after first login. Packages start
-# listeners on all interfaces, and nginx is the public API: neither may run before it.
+# listeners on all interfaces (nginx :80, and the API on :8080): neither may run before it.
 wait_firewall() {
   local i
   for ((i = 0; i < 60; i++)); do
@@ -27,9 +27,39 @@ stage_packages() {
   wait_firewall
   apt-get update
   DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    nftables jq python3-venv libgomp1 git rsync nginx prometheus prometheus-node-exporter
+    nftables jq python3-venv libgomp1 git rsync nginx
   nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv
   free -g
+}
+
+stage_tailscale() {
+  local kf=/run/ambermist/ts-authkey name
+  if ! command -v tailscale >/dev/null; then
+    curl -fsSL -o /usr/share/keyrings/tailscale-archive-keyring.gpg \
+      https://pkgs.tailscale.com/stable/ubuntu/noble.noarmor.gpg
+    curl -fsSL -o /etc/apt/sources.list.d/tailscale.list \
+      https://pkgs.tailscale.com/stable/ubuntu/noble.tailscale-keyring.list
+    apt-get update
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends tailscale
+  fi
+  tailscale version
+  systemctl enable --now tailscaled
+  if [[ $(tailscale status --json | jq -r .BackendState) != Running ]]; then
+    grep -q 'file:' <<< "$(tailscale up --help 2>&1)" \
+      || { echo "tailscale: this version can't read --auth-key from a file; stop and report" >&2; exit 1; }
+    [[ -s $kf ]] || { echo "tailscale: $kf missing; ops/provision.sh pushes it" >&2; exit 1; }
+    tailscale up --auth-key="file:$kf" --hostname=ambermist-h200 --accept-dns=false
+  fi
+  rm -f "$kf"
+  name=$(tailscale status --json | jq -r .Self.DNSName)
+  if [[ $name != ambermist-h200.* ]]; then
+    # Log out (removes this ephemeral device) so the rerun joins fresh and gets the name.
+    tailscale logout
+    echo "tailscale: registered as '$name': a stale device holds ambermist-h200." \
+      "Remove it in the admin console (Machines), then rerun: ops/provision.sh <ip> tailscale" >&2
+    exit 1
+  fi
+  echo "tailscale: ${name%.} $(tailscale ip -4)"
 }
 
 stage_disks() {
@@ -85,19 +115,14 @@ stage_t0() {
 
 stage_serve() {
   . "$ROOT/serving.conf"
-  # Key for the local Prometheus scrape. Generated here, never leaves the node; provision.sh
-  # keeps it in llama-api-keys when it rewrites that file.
-  local mk=/etc/ambermist/metrics-key
-  [[ -s $mk ]] || (umask 077; echo "amb-$(openssl rand -hex 32)" > "$mk")
-  chown root:prometheus "$mk"; chmod 0640 "$mk"
-  grep -qxFf "$mk" /etc/ambermist/llama-api-keys || cat "$mk" >> /etc/ambermist/llama-api-keys
-
   install_etc tmpfiles.d/ambermist.conf systemd/system/llama-server.service \
-    systemd/system/llama-healthcheck.service systemd/system/llama-healthcheck.timer
+    systemd/system/llama-healthcheck.service systemd/system/llama-healthcheck.timer \
+    logrotate.d/ambermist systemd/system/logrotate.timer.d/hourly.conf
   systemd-tmpfiles --create /etc/tmpfiles.d/ambermist.conf
   systemctl stop llama-server 2>/dev/null || true   # also drops a Phase 1 transient unit
   systemctl reset-failed llama-server 2>/dev/null || true
   systemctl daemon-reload
+  systemctl restart logrotate.timer
   systemctl enable --now llama-server llama-healthcheck.timer
   local i code
   for ((i = 0; i < 240; i++)); do
@@ -119,18 +144,14 @@ stage_nginx() {
   nginx -t
   systemctl enable nginx
   systemctl reload-or-restart nginx
-  curl -sf -o /dev/null http://127.0.0.1:8080/health && echo "nginx: /health ok on :8080"
-}
-
-stage_observe() {
-  install -d -o prometheus -g prometheus /srv/logs/prometheus
-  install_etc default/prometheus default/prometheus-node-exporter prometheus/prometheus.yml \
-    logrotate.d/ambermist systemd/system/logrotate.timer.d/hourly.conf \
-    systemd/system/amb-metrics.service systemd/system/amb-metrics.timer
-  systemctl daemon-reload
-  systemctl restart prometheus prometheus-node-exporter logrotate.timer
-  systemctl enable --now amb-metrics.timer
-  ss -ltn | grep -E ':(9090|9100) '
+  # Reload is asynchronous: on a new node nginx may not have opened 8080 yet.
+  local i
+  for ((i = 0; i < 10; i++)); do
+    curl -sf -o /dev/null http://127.0.0.1:8080/health && { echo "nginx: /health ok on :8080"; return 0; }
+    sleep 1
+  done
+  echo "nginx: /health not ok on :8080 after 10 s" >&2
+  return 1
 }
 
 # The outer call logs and times the stage; the inner call runs it under set -e.

@@ -19,7 +19,9 @@ table inet amb {
     ct state invalid drop
     icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, nd-router-advert } accept
     udp sport 67 udp dport 68 accept
-    ip saddr @admin_pub tcp dport { 22, 8080 } accept
+    ip saddr @admin_pub tcp dport 22 accept            # SSH for provisioning
+    iifname "tailscale0" tcp dport { 22, 8080 } accept # the tailnet policy decides who
+    udp dport 41641 accept                             # tailscaled direct connections
   }
   chain forward { type filter hook forward priority filter; policy drop; }
 }

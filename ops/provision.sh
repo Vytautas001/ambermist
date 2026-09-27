@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
 # Usage: ops/provision.sh <ip> [stage...]
 # Copies node/ to the node, pushes secrets on stdin, and runs the bootstrap stages
-# (default: packages disks model+build t0 serve nginx observe). Safe to rerun.
+# (default: packages tailscale disks model+build t0 serve nginx). Safe to rerun.
 set -euo pipefail
 ip=${1:?usage: provision.sh <ip> [stage...]}
 shift
 root=$(cd "$(dirname "$0")/.." && pwd)
-if [[ -z ${AMB_API_KEY:-} || -z ${HF_TOKEN:-} ]]; then
+if [[ -z ${AMB_API_KEY:-} || -z ${HF_TOKEN:-} || -z ${TS_AUTHKEY:-} ]]; then
   set -a; . "$root/.env"; set +a
 fi
-: "${AMB_API_KEY:?}" "${HF_TOKEN:?}"
+: "${AMB_API_KEY:?}" "${HF_TOKEN:?}" "${TS_AUTHKEY:?}"
 
 key=${SSH_KEY:?set SSH_KEY in .env}
 SSH=(ssh -i "$key" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new
      -o ServerAliveInterval=30 -o ConnectTimeout=10 "root@$ip")
 stages=("$@")
-[[ ${#stages[@]} -gt 0 ]] || stages=(packages disks model+build t0 serve nginx observe)
+[[ ${#stages[@]} -gt 0 ]] || stages=(packages tailscale disks model+build t0 serve nginx)
 
 echo "waiting for ssh on $ip"
 for ((i = 0; i < 90; i++)); do
@@ -29,11 +29,13 @@ tar -C "$root/node" -cz . | "${SSH[@]}" 'mkdir -p /opt/ambermist && tar -C /opt/
 
 # Secrets travel on stdin only (printf is a shell builtin, so nothing appears in argv).
 "${SSH[@]}" 'id llama >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin llama'
-# The node-generated metrics key (bootstrap.sh serve) stays in the file.
 printf '%s\n' "$AMB_API_KEY" | "${SSH[@]}" \
-  'install -d -m 0755 /etc/ambermist && umask 027 && { cat; cat /etc/ambermist/metrics-key 2>/dev/null || true; } > /etc/ambermist/llama-api-keys && chown root:llama /etc/ambermist/llama-api-keys && chmod 0640 /etc/ambermist/llama-api-keys'
+  'install -d -m 0755 /etc/ambermist && umask 027 && cat > /etc/ambermist/llama-api-keys && chown root:llama /etc/ambermist/llama-api-keys && chmod 0640 /etc/ambermist/llama-api-keys'
 printf 'Authorization: Bearer %s\n' "$HF_TOKEN" | "${SSH[@]}" \
   'install -d -m 0700 /run/ambermist && umask 077 && cat > /run/ambermist/hf-auth-header'
+# bootstrap.sh tailscale deletes it after joining.
+printf '%s' "$TS_AUTHKEY" | "${SSH[@]}" \
+  'install -d -m 0700 /run/ambermist && umask 077 && cat > /run/ambermist/ts-authkey'
 
 run_stage() { "${SSH[@]}" "/opt/ambermist/bootstrap.sh $1"; }
 
@@ -49,5 +51,6 @@ for st in "${stages[@]}"; do
     run_stage "$st"
   fi
 done
-echo "provision: done. API (from admin_cidrs only): http://$ip:8080/v1"
-echo "Tunnel, to keep the key off the internet: ssh -i $key -N -L 8080:127.0.0.1:8080 root@$ip"
+dns=$("${SSH[@]}" 'tailscale status --json | jq -r .Self.DNSName')
+echo "provision: done. API on the tailnet: http://${dns%.}:8080/v1 (short: http://ambermist-h200:8080/v1)"
+echo "Tunnel from a host off the tailnet: ssh -i $key -N -L 8080:127.0.0.1:8080 root@$ip"

@@ -1,0 +1,15 @@
+// Tailnet policy for ambermist. Apply by hand in the Tailscale admin console (Access
+// controls). Replace <operator login> first. If the tailnet has other devices, merge these
+// entries into its policy instead of replacing it, and make sure no allow-all rule covers
+// tag:ambermist. tag:ambermist is never a source: the node can't open tailnet connections.
+{
+  "groups":    { "group:amb-admin": ["<operator login>"] },
+  "tagOwners": {
+    "tag:ambermist":          ["group:amb-admin"],
+    "tag:ambermist-consumer": ["group:amb-admin"]
+  },
+  "grants": [
+    { "src": ["tag:ambermist-consumer"], "dst": ["tag:ambermist"], "ip": ["tcp:8080"] },
+    { "src": ["group:amb-admin"],        "dst": ["tag:ambermist"], "ip": ["tcp:22", "tcp:8080"] }
+  ]
+}

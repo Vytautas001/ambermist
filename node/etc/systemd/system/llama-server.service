@@ -17,7 +17,7 @@ ExecStart=/srv/build/current/bin/llama-server --model ${MODEL_PATH} --alias ${LL
   --host ${LLAMA_HOST} --port ${LLAMA_PORT} --api-key-file /etc/ambermist/llama-api-keys --jinja \
   --ctx-size ${LLAMA_CTX} --parallel ${LLAMA_SLOTS} --no-kv-unified --no-context-shift \
   --n-gpu-layers all --fit off --flash-attn on --ctx-checkpoints 2 \
-  --metrics --slots --no-webui --log-timestamps --log-prefix $LLAMA_EXTRA_ARGS
+  --slots --no-webui --log-timestamps --log-prefix $LLAMA_EXTRA_ARGS
 Restart=on-failure
 RestartSec=10
 TimeoutStopSec=30

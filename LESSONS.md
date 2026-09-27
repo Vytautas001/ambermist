@@ -14,6 +14,8 @@ Status of each fact: **verified** (checked against a source or run), **decided**
   Provisional ceilings: H200 4, H100 1, RTX 2 per GPU. *(decided)*
 - **Harness tools are range-bound stubs.** No real offensive tooling; empty
   `in_scope_networks` must be rejected; scope lives in the system prompt. *(decided)*
+- **No Prometheus** (or node_exporter, or metrics timers), whatever the plan says. Logs
+  (nginx access log, llama-server log) are the only observability. *(decided 2026-09-27)*
 - **Model license:** Qwen Community License 1.0 (not Apache). Applicability to
   participant service must be assessed and recorded. *(decided, assessment pending)*
 
@@ -230,14 +232,13 @@ Built as one step: llama-server never listened publicly. The plan's separate Pha
 stage wasn't needed (sshd was already key-only; `serving.conf` sets the address).
 
 - **Layout:** llama-server is `llama-server.service` (user `llama`, `127.0.0.1:8081`,
-  `ProtectSystem=strict`); nginx on `0.0.0.0:8080`; Prometheus `127.0.0.1:9090`;
-  node_exporter `127.0.0.1:9100`. `ss -ltn` shows nothing else beyond loopback except sshd.
-- **Ubuntu packages start listeners on all interfaces at install** (nginx :80, Prometheus
-  :9090, node_exporter :9100). The `packages` stage therefore waits for the firewall table
-  first; the `observe` stage moves them to loopback, and the `nginx` stage removes the
-  default site. Versions: nginx 1.24.0, Prometheus 2.45.3, node_exporter 1.7.0.
-- **Ubuntu's `prometheus.service`** uses `ProtectSystem=full` and `PrivateUsers=true`: it can
-  write `/srv/logs/prometheus` and read a `root:prometheus 0640` key file.
+  `ProtectSystem=strict`, no `--metrics`); nginx on `0.0.0.0:8080`. `ss -ltn` shows nothing
+  else beyond loopback except sshd.
+- **Ubuntu packages start listeners on all interfaces at install** (nginx 1.24.0 on :80).
+  The `packages` stage therefore waits for the firewall table first, and the `nginx` stage
+  removes the default site.
+- **`provision.sh` never deletes files on the node:** it untars `node/` over `/opt/ambermist`,
+  so files removed from the repo stay there until deleted by hand.
 - **systemd `$LLAMA_EXTRA_ARGS`** (unbraced, unset) expands to zero arguments; the process
   got exactly the §6.1 flags.
 - **Switching from the Phase 1 transient unit:** stop it first. The transient unit file in
@@ -248,9 +249,7 @@ stage wasn't needed (sshd was already key-only; `serving.conf` sets the address)
   (plan §2.2 says `/v1/health` works; nginx §6.3 only passes `/health`).
 - **Through nginx with the key (tunnel):** chat 6×7 = 42; streaming delivered 59 SSE events
   ending in `data: [DONE]`, so `proxy_buffering off` works.
-- **Prometheus:** both scrape targets `up`. `llamacpp:*`, `amb_gpu_*`, and
-  `amb_http_requests_last_minute{code}` return data. One timer (`amb-metrics`, 15 s) writes
-  both GPU and HTTP metrics instead of the plan's two.
+- **Prometheus** was built and then removed the same day (decision above); purged from the node.
 - **Not exercised** *(unverified)*: crash restart, the health-check restart, reboot recovery
   (T4d), actual log rotation, the 429 cap, and T1/T6 against the public URL. The scan from
   outside `admin_cidrs` hasn't been run.

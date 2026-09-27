@@ -4,7 +4,7 @@ log_format llm_json escape=json '{"ts":$msec,"client":"$remote_addr","method":"$
   '"rt":$request_time,"urt":"$upstream_response_time","ustatus":"$upstream_status"}';
 
 server {
-  listen 0.0.0.0:8080;           # public; nftables admits only admin_cidrs
+  listen 0.0.0.0:8080;           # nftables admits only tailscale0
   access_log /srv/logs/nginx/access.json.log llm_json;   # no bodies, so no prompt content
   error_log  /srv/logs/nginx/error.log warn;
   client_max_body_size 8m;

@@ -1,6 +1,0 @@
-[Unit]
-Description=Write ambermist GPU and HTTP metrics for node_exporter
-
-[Service]
-Type=oneshot
-ExecStart=/opt/ambermist/bin/metrics.sh
