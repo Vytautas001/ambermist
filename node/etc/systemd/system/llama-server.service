@@ -1,0 +1,35 @@
+[Unit]
+Description=llama-server (ambermist inference tier)
+After=network-online.target
+Wants=network-online.target
+RequiresMountsFor=/srv/models /srv/build /srv/logs
+StartLimitIntervalSec=900
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=llama
+Group=llama
+EnvironmentFile=/opt/ambermist/serving.conf
+Environment=LD_LIBRARY_PATH=/srv/build/current/lib
+ExecStartPre=/opt/ambermist/bin/preflight-serve.sh
+ExecStart=/srv/build/current/bin/llama-server --model ${MODEL_PATH} --alias ${LLAMA_ALIAS} \
+  --host ${LLAMA_HOST} --port ${LLAMA_PORT} --api-key-file /etc/ambermist/llama-api-keys --jinja \
+  --ctx-size ${LLAMA_CTX} --parallel ${LLAMA_SLOTS} --no-kv-unified --no-context-shift \
+  --n-gpu-layers all --fit off --flash-attn on --ctx-checkpoints 2 \
+  --metrics --slots --no-webui --log-timestamps --log-prefix $LLAMA_EXTRA_ARGS
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=30
+LimitMEMLOCK=infinity
+LimitNOFILE=65536
+StandardOutput=append:/srv/logs/llama/server.log
+StandardError=append:/srv/logs/llama/server.log
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/srv/logs/llama
+
+[Install]
+WantedBy=multi-user.target

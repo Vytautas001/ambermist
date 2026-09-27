@@ -1,8 +1,9 @@
 # ambermist
 
 A self-hosted llama.cpp endpoint (Qwen3.8-Flash-Next Uncensored, Q4_K_M) on one Verda H200.
-This README describes how spin-up works **as of Phase 1** (first light: serve on loopback,
-test through an SSH tunnel). The design is in [docs/inference-tier-plan.md](docs/inference-tier-plan.md),
+This README describes how spin-up works **as of Phase 3**: llama-server runs as a systemd unit on
+`127.0.0.1:8081`, nginx serves the API on public port 8080 (reachable only from `admin_cidrs`), a
+timer restarts a hung server, and Prometheus runs on loopback. The design is in [docs/inference-tier-plan.md](docs/inference-tier-plan.md),
 the Phase 1 task in [docs/phase-1-first-light.md](docs/phase-1-first-light.md), and measured
 facts and gotchas in [LESSONS.md](LESSONS.md). Rules for coding assistants: [AGENTS.md](AGENTS.md).
 
@@ -12,9 +13,9 @@ Two OpenTofu stacks, one node-side bootstrap, and a few scripts:
 
 | Part | What it does |
 | :-- | :-- |
-| `infra/storage/` | The 128 GiB NVMe model volume `ambermist-model` (`prevent_destroy`, kept when a spot node is reclaimed). Rarely changes. |
+| `infra/storage/` | The 140 GiB NVMe model volume `ambermist-model` (`prevent_destroy`, kept when a spot node is reclaimed). Rarely changes. |
 | `infra/compute/` | Registers your public key with Verda, the boot script, the spot H200 instance, and the volume attachment. Created and destroyed every session. |
-| `node/` | Copied to `/opt/ambermist` on the node: pins, `serving.conf`, `bootstrap.sh`, `bin/fetch-model.sh`, `bin/build-llama.sh`. Knows nothing about Verda. |
+| `node/` | Copied to `/opt/ambermist` on the node: pins, `serving.conf`, `bootstrap.sh`, and `bin/` (download, build, preflight, health check, metrics). `node/etc/` mirrors the files installed under `/etc`: systemd units and timers, the nginx site, logrotate, Prometheus. Knows nothing about Verda. |
 | `ops/fleet-check.py` | Read-only account check, fleet cap, orphan volumes, H200 availability, site pick. |
 | `ops/provision.sh` | Runs from your workstation: copies `node/`, pushes secrets, runs the stages over SSH. |
 | `ops/accept/t1.py` | T1 tool-call round trip through the tunnel. Standard library only. |
@@ -153,35 +154,47 @@ ops/provision.sh <public_ip>
 
 `provision.sh` waits for SSH (as `root`, `accept-new` host keys), copies `node/` to
 `/opt/ambermist`, creates the `llama` user, and pushes secrets **on stdin only**:
-`AMB_API_KEY` → `/etc/ambermist/llama-api-keys` (root:llama, 0640) and the Hugging Face header →
+`AMB_API_KEY` → `/etc/ambermist/llama-api-keys` (root:llama, 0640; the node-generated metrics key
+stays in that file) and the Hugging Face header →
 `/run/ambermist/hf-auth-header` (0600, tmpfs). It then runs `node/bootstrap.sh` stages in order:
 
 | Stage | What it does |
 | :-- | :-- |
-| `packages` | apt packages; prints GPU, driver, and RAM. |
+| `packages` | Waits until the boot script's firewall is loaded, then installs apt packages (including nginx, Prometheus, node_exporter); prints GPU, driver, and RAM. |
 | `disks` | Mounts the volume by label `amb-model` at `/srv/models`. Formats only if exactly one blank 140 GiB disk exists; otherwise aborts. |
 | `model` + `build` | Run in parallel. `model`: resumable download of 3 shards, SHA-256 checked against `node/pins/qwen38-uncensored-q4km.sha256`. `build`: llama.cpp at the pinned commit in a CUDA container; fails if `--version` doesn't show the pin. |
 | `t0` | Checks GGUF metadata (`qwen4exp`, `compress_ratios` only 0 and 4) and the server version. |
-| `serve` | Starts llama-server as the transient unit `llama-server` on `127.0.0.1:8080`, waits for `/health`. |
+| `serve` | Creates the Prometheus scrape key `/etc/ambermist/metrics-key` if missing, installs `llama-server.service` (on `127.0.0.1:8081`, restarts on failure, `preflight-serve.sh` checks model, build, key file and GPU first) and `llama-healthcheck.timer` (restarts the server after 3 failed `/health` checks 30 s apart; 503 is fine for the first 20 min). Waits for `/health`. |
+| `nginx` | Refuses to run unless the firewall is loaded. Installs the `ambermist` site on `0.0.0.0:8080`: `/health`, `/v1/chat/completions`, `/v1/models` go to llama-server; everything else is 404; more than 12 concurrent API connections get 429. JSON access log (no bodies) in `/srv/logs/nginx/`. |
+| `observe` | Prometheus on `127.0.0.1:9090` (data in `/srv/logs/prometheus`, 15 days or 2 GB), node_exporter on `127.0.0.1:9100`, `amb-metrics.timer` (GPU state and nginx status counts every 15 s), and hourly logrotate for `/srv/logs/llama` and `/srv/logs/nginx`. |
 
-Every stage is safe to rerun. To run only some: `ops/provision.sh <ip> t0 serve`. Logs are in
+Every stage is safe to rerun. To run only some: `ops/provision.sh <ip> serve nginx`. Logs are in
 `/srv/logs/bootstrap/<stage>.log` with start and end times in `timeline.log`. `/srv/build` and
 `/srv/logs` are on the spot OS disk and are lost if the instance is reclaimed or destroyed.
 A warm model volume skips the download (`fetch-model.sh` fast path), so a rerun takes a few minutes
 plus the build.
 
-## Test
+## Use and test
 
-The API listens on loopback only. Open a tunnel and run T1:
+The API is `http://<public_ip>:8080/v1` with `Authorization: Bearer $AMB_API_KEY`, reachable only
+from `admin_cidrs`. It is plain HTTP: calling the public URL sends the key and the prompts
+unencrypted over the internet. To keep them inside SSH, use a tunnel instead; it reaches the same
+nginx:
 
 ```bash
 ssh -i "${SSH_KEY:-$HOME/.ssh/verda}" -N -L 8080:127.0.0.1:8080 root@<public_ip> &
-python3 ops/accept/t1.py     # uses AMB_API_KEY from the sourced .env; exits 0 only if T1 passes
+python3 ops/accept/t1.py     # T1 against http://127.0.0.1:8080; add --base http://<public_ip>:8080 for the public URL
 ```
 
-Results go to `~/ambermist-runs/<date>/t1-<time>.json`. On the node, the default log verbosity
-hides the loader lines (offload count, buffer sizes). To see them, run
-`LLAMA_EXTRA_ARGS="-lv 5" /opt/ambermist/bootstrap.sh serve` on the node.
+Results go to `~/ambermist-runs/<date>/t1-<time>.json`.
+
+Monitoring stays on the node. For the Prometheus UI, `ssh -N -L 9090:127.0.0.1:9090 root@<public_ip>`
+and open `http://127.0.0.1:9090`. Useful queries: `rate(llamacpp:tokens_predicted_total[5m])`,
+`llamacpp:requests_deferred`, `amb_gpu_memory_used_mib`, `amb_http_requests_last_minute`.
+
+The default log verbosity hides the loader lines (offload count, buffer sizes). To see them, on
+the node run `echo 'LLAMA_EXTRA_ARGS="-lv 5"' >> /opt/ambermist/serving.conf && systemctl restart llama-server`,
+then read `/srv/logs/llama/server.log`. The next `provision.sh` resets `serving.conf`.
 
 ## Tear down
 
@@ -205,5 +218,7 @@ updatable in place, so any change to SKU, spot, or the boot script replaces it),
 
 ## Not built yet
 
-Public API on 8080, nginx, systemd unit for llama-server, health checks, Prometheus, Tailscale,
-`make` targets, build and logs volumes, SOPS secrets, and tests T2–T8. See the phases in the plan.
+TLS or Tailscale (so the key still crosses the internet unencrypted on the public URL), `make`
+targets, build and logs volumes, SOPS secrets, and tests T2–T8. Restart-on-crash, the health-check
+restart, reboot recovery, log rotation and the 429 cap are configured but have not been exercised.
+See the phases in the plan.

@@ -1,0 +1,23 @@
+/srv/logs/llama/*.log {
+  daily
+  maxsize 256M
+  rotate 7
+  compress
+  delaycompress
+  missingok
+  notifempty
+  copytruncate
+}
+/srv/logs/nginx/*.log {
+  daily
+  maxsize 256M
+  rotate 7
+  compress
+  delaycompress
+  missingok
+  notifempty
+  sharedscripts
+  postrotate
+    [ -s /run/nginx.pid ] && kill -USR1 "$(cat /run/nginx.pid)"
+  endscript
+}

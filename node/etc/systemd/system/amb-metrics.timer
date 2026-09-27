@@ -1,0 +1,10 @@
+[Unit]
+Description=Write ambermist metrics every 15 s
+
+[Timer]
+OnActiveSec=5s
+OnUnitActiveSec=15s
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

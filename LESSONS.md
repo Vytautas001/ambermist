@@ -172,3 +172,85 @@ reliably pass** (below). Nothing was tuned to change the T1 result.
   settings, `tool_choice`, or is just this model. Not tried, per the task's stop rules.
 - **Reclaim recovery:** untested (no reclaim happened).
 - **GPU time:** instance created 07:54 UTC, destroyed 08:21 UTC, about 0.46 h of spot H200.
+
+## Uncensored Q4_K_M (2026-09-27, all *verified* by running it)
+
+Model switched to `orcarouter/Qwen3.8-Flash-Next-Uncensored-GGUF` Q4_K_M @ `0434906a`
+(3 shards, 119,150,722,944 bytes = 111.0 GiB). Same llama.cpp pin, build image, server
+flags, and `serving.conf` as Phase 1 except the model path. Result: **T0 and T1 pass**, so
+the Phase 1 gate is met with this model.
+
+- **Volume:** `ambermist-model` is 140 GiB (API resize while detached, plan §3.2). The
+  ext4 filesystem from 2026-09-26 was kept and grown, not reformatted: 139 GiB, 111 GiB
+  used, 28 GiB free.
+- **Instance:** spot H200, FIN-02, created 09:03 UTC. Provisioning with the weights
+  already on the volume: packages 8 s, model 1 s (fast path), build 232 s, t0 18 s,
+  serve 261 s to `/health` 200 with a cold page cache. A restart with a warm page cache
+  was healthy after 15 s.
+- **T0:** `qwen4exp`; `compress_ratios` only 0 and 4, 12 layers with 4; `--version` shows
+  `e9f824d`. The loader reports `Q4_K - Medium`, 176.94 B params, type `A3B`, 512 experts
+  with 10 used, `n_ctx_train` 262,144.
+- **Loader (`-lv 5`):** `offloaded 49/49 layers to GPU`; `n_ctx = 65536`,
+  `n_ctx_seq = 16384`, 4 slots, `kv_unified = false`; no fit adjustment or context
+  reduction. CUDA0 model 79,710 MiB, KV 1,536 + 192 MiB, recurrent state 450 MiB,
+  compute 263 MiB. CPU-mapped: `per_layer_token_embd.weight` 33,569 MiB (27,465 MiB on
+  UD-Q4_K_XL) plus 341 MiB. `nvidia-smi` memory.used: 82,761 MiB after load, 82,877 MiB
+  after T1, so about 59 GiB of the H200 is free. Host: 167 GiB RAM, 95 GiB page cache
+  after load.
+- **T1 (7 runs of 5+5 tool rounds, streaming and not):** **70 of 70 parsed, 70 of 70
+  with the right arguments, second turn correct in all.** 401 without key, `/health` 200,
+  `reasoner` listed, 6×7 = 42 in every run. Same T1 script and flags as Phase 1, where
+  UD-Q4_K_XL skipped the tool call in 4 of 70; at that rate, 0 of 70 has a 1–2% chance,
+  so the difference is probably the model, not luck. Response shape unchanged:
+  `reasoning_content` always present; `content` is `""` non-streaming and `null`
+  streaming when there is a tool call. Results: `~/ambermist-runs/2026-09-27/t1-122549.json`
+  and `t1-1237*`–`t1-1239*`. The earlier files there (06:04 and 08:47 UTC) came from
+  before this instance, and which model they ran against wasn't recorded; `t1-122441`
+  hit 503 while the model was still loading.
+
+## Phase 2 prechecks (2026-09-27, *verified* on the running H200)
+
+- **sshd:** the `24.04.cuda12.9.docker` image already sets `passwordauthentication no` and
+  `kbdinteractiveauthentication no` (drop-ins `60-cloudimg-settings.conf`,
+  `dc_hardening.conf`); a client without a key is offered only `publickey`. No drop-in
+  needed (plan step 26).
+- **Unauthenticated paths at the pin with `--no-webui`:** `/health` and `/v1/health` → 200;
+  `/` → 404; `/index.html`, `/favicon.ico`, `/props`, `/slots`, `/metrics`, `/v1/models`,
+  `POST /v1/chat/completions` → 401 `authentication_error`. No web UI path answers.
+- **Firewall from inside `admin_cidrs`:** 22 open; 8080 refused while llama-server is on
+  loopback (so nftables admits it); every other TCP port times out. `nftables.service` is
+  enabled but shows `inactive`: the boot script loads the rules with `nft -f` directly.
+- **Scanning from WSL:** a 1,000-way parallel connect scan reported 8080 as timed out,
+  while a single `nc -vz` got "refused". Confirm bulk-scan results port by port.
+- **State:** no API key, HF token, or Tailscale key in `infra/*/terraform.tfstate*`.
+
+## Phases 2 and 3 (2026-09-27, *verified* on the running H200 unless marked)
+
+Built as one step: llama-server never listened publicly. The plan's separate Phase 2 `net`
+stage wasn't needed (sshd was already key-only; `serving.conf` sets the address).
+
+- **Layout:** llama-server is `llama-server.service` (user `llama`, `127.0.0.1:8081`,
+  `ProtectSystem=strict`); nginx on `0.0.0.0:8080`; Prometheus `127.0.0.1:9090`;
+  node_exporter `127.0.0.1:9100`. `ss -ltn` shows nothing else beyond loopback except sshd.
+- **Ubuntu packages start listeners on all interfaces at install** (nginx :80, Prometheus
+  :9090, node_exporter :9100). The `packages` stage therefore waits for the firewall table
+  first; the `observe` stage moves them to loopback, and the `nginx` stage removes the
+  default site. Versions: nginx 1.24.0, Prometheus 2.45.3, node_exporter 1.7.0.
+- **Ubuntu's `prometheus.service`** uses `ProtectSystem=full` and `PrivateUsers=true`: it can
+  write `/srv/logs/prometheus` and read a `root:prometheus 0640` key file.
+- **systemd `$LLAMA_EXTRA_ARGS`** (unbraced, unset) expands to zero arguments; the process
+  got exactly the §6.1 flags.
+- **Switching from the Phase 1 transient unit:** stop it first. The transient unit file in
+  `/run/systemd/transient` would otherwise win over `/etc/systemd/system/llama-server.service`.
+- **Restart with warm page cache:** healthy after ~15 s under the new unit.
+- **Through nginx from the public IP, no key:** `/health` 200; `/v1/models` and
+  `POST /v1/chat/completions` 401; `/slots`, `/metrics`, `/props`, `/`, and `/v1/health` 404
+  (plan §2.2 says `/v1/health` works; nginx §6.3 only passes `/health`).
+- **Through nginx with the key (tunnel):** chat 6×7 = 42; streaming delivered 59 SSE events
+  ending in `data: [DONE]`, so `proxy_buffering off` works.
+- **Prometheus:** both scrape targets `up`. `llamacpp:*`, `amb_gpu_*`, and
+  `amb_http_requests_last_minute{code}` return data. One timer (`amb-metrics`, 15 s) writes
+  both GPU and HTTP metrics instead of the plan's two.
+- **Not exercised** *(unverified)*: crash restart, the health-check restart, reboot recovery
+  (T4d), actual log rotation, the 429 cap, and T1/T6 against the public URL. The scan from
+  outside `admin_cidrs` hasn't been run.
