@@ -9,6 +9,9 @@ the Phase 1 task in [docs/phase-1-first-light.md](docs/phase-1-first-light.md), 
 [docs/phase-6-tailscale.md](docs/phase-6-tailscale.md), and measured
 facts and gotchas in [LESSONS.md](LESSONS.md). Rules for coding assistants: [AGENTS.md](AGENTS.md).
 
+For a Kali client, follow [CALDERA with a remote LLM over Tailscale](docs/caldera-kali.md),
+including enrollment with a predefined consumer auth key.
+
 ## How it fits together
 
 Two OpenTofu stacks, one node-side bootstrap, and a few scripts:
