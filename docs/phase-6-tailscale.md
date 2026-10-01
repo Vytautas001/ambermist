@@ -54,6 +54,12 @@ Don't build these:
 - A lab gateway or subnet router, Tailscale SSH, Tailscale API automation (device removal,
   IP pinning), key-expiry checks, `make` targets, SOPS, Prometheus, new test scripts.
 
+  **The lab gateway was reversed on 2026-10-01**, after the lab's addresses turned out to
+  collide with the range Tailscale claims: see
+  [ADR 0006](adr/0006-lab-gateway-for-llm-access.md) and [lab-gateway.md](lab-gateway.md).
+  A subnet router remains out of scope, and the ADR explains why it is the wrong tool here.
+  The rest of this list stands.
+
 ## Steps
 
 1. **Tailnet policy** (`ops/tailnet-policy.hujson`). The plan §2.6 policy without

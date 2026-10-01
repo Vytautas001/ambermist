@@ -253,3 +253,44 @@ stage wasn't needed (sshd was already key-only; `serving.conf` sets the address)
 - **Not exercised** *(unverified)*: crash restart, the health-check restart, reboot recovery
   (T4d), actual log rotation, the 429 cap, and T1/T6 against the public URL. The scan from
   outside `admin_cidrs` hasn't been run.
+
+## Lab gateway and the CGNAT collision (2026-10-01, *verified* on the Kali client)
+
+The lab's own addressing sits inside the range Tailscale claims: LAN `100.66.6.0/24`,
+resolvers `100.100.100.26`/`.28`, all within `100.64.0.0/10`. Everything below follows
+from that one fact. The decision it forced is [ADR 0006](docs/adr/0006-lab-gateway-for-llm-access.md).
+
+- **Tailscale's anti-spoof rule silently kills an overlapping LAN.** tailscaled installs
+  `-A ts-input -s 100.64.0.0/10 ! -i tailscale0 -j DROP`, which drops every *reply* from
+  the lab. Symptom: the default gateway and both resolvers 100% unreachable while
+  `1.1.1.1` answered over the same path, ARP entries `REACHABLE`, and
+  `ip route get 100.100.100.26` correctly showing `via 100.66.6.200 dev eth0`. Routing and
+  DNS both look fine; only the netfilter counter tells the truth
+  (`iptables -L ts-input -v -n`). `--netfilter-mode=off` is the only setting that lets both
+  coexist, and `tailscale up` resets it.
+- **`ping 100.100.100.100` proves nothing.** It answers from tailscaled regardless, even
+  with `--accept-dns=false`, and says nothing about whether other `100.x` hosts are reachable.
+- **`--accept-dns=true` without the resolved stub is all-or-nothing.** With
+  `/etc/resolv.conf` a regular file, tailscaled uses its *direct* manager and overwrites it
+  wholesale; split DNS needs `/etc/resolv.conf` symlinked to
+  `/run/systemd/resolve/stub-resolv.conf`. When it is, tailscaled publishes MagicDNS on the
+  `tailscale0` link with routing-only domains and leaves everything else alone.
+- **That mistake produces a resolver loop**, not an error: quad100 → `127.0.0.53` →
+  quad100, visible only as `dns: tcp query: waiting for response or error from
+  [127.0.0.53]: context deadline exceeded` in the tailscaled journal.
+- **systemd-resolved with no upstream returns `REFUSED`, not SERVFAIL.** Once the stub
+  symlink is restored but nothing supplies servers, every non-tailnet name fails this way.
+  `FallbackDNS` does not help: it applies only when no `DNS=` is configured at all, so dead
+  servers listed in `DNS=` fail rather than falling through.
+- **cloud-init put `dns-nameservers` on the `lo` stanza** of
+  `/etc/network/interfaces.d/50-cloud-init`, not `eth0`; eth0 is `unmanaged` by
+  NetworkManager and no `resolvconf` is installed, so those lines never reached any
+  resolver. The working fix is a `/etc/systemd/resolved.conf.d/` drop-in.
+- **nginx must re-resolve the H200 per request.** A literal name in `proxy_pass` is resolved
+  once at startup and nginx refuses to start when the peer is absent. Using
+  `resolver 127.0.0.53` with the name in a variable (and `$request_uri` appended) both
+  survives node rebuilds, which change the 100.x address, and lets nginx start without the
+  node present — it returns 502 until it is.
+- **Not verified:** the gateway's leg to the H200. The node was not joined to the tailnet
+  on 2026-10-01, so `/health` through the gateway returns 502 and no inference has gone
+  through this path.

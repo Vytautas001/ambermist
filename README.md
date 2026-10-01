@@ -9,8 +9,11 @@ the Phase 1 task in [docs/phase-1-first-light.md](docs/phase-1-first-light.md), 
 [docs/phase-6-tailscale.md](docs/phase-6-tailscale.md), and measured
 facts and gotchas in [LESSONS.md](LESSONS.md). Rules for coding assistants: [AGENTS.md](AGENTS.md).
 
-For a Kali client, follow [CALDERA with a remote LLM over Tailscale](docs/caldera-kali.md),
-including enrollment with a predefined consumer auth key.
+Lab clients do not join the tailnet themselves: one gateway host carries Tailscale and fronts
+the API on the lab network, because the lab's addresses collide with the range Tailscale claims.
+See [docs/lab-gateway.md](docs/lab-gateway.md) and
+[ADR 0006](docs/adr/0006-lab-gateway-for-llm-access.md). For a CALDERA client, follow
+[CALDERA with a remote LLM through the lab gateway](docs/caldera-kali.md).
 
 ## How it fits together
 
@@ -24,6 +27,7 @@ Two OpenTofu stacks, one node-side bootstrap, and a few scripts:
 | `ops/fleet-check.py` | Read-only account check, fleet cap, orphan volumes, H200 availability, site pick. |
 | `ops/provision.sh` | Runs from your workstation: copies `node/`, pushes secrets, runs the stages over SSH. |
 | `ops/tailnet-policy.hujson` | The tailnet policy (who reaches the node's ports 22 and 8080). Applied by hand in the Tailscale admin console. |
+| `ops/lab/gateway.sh` | Configures the lab gateway: Tailscale on the tailnet side, nginx on the lab side. Staged and safe to rerun. |
 | `ops/accept/t1.py` | T1 tool-call round trip through the tunnel. Standard library only. |
 
 The `.tf` files know volume sizes and the instance SKU, nothing about Qwen or llama.cpp. To
@@ -55,8 +59,9 @@ Tailnet (set up once, by hand):
   controls). The default policy allows everything, so replace or narrow it; if the tailnet has other
   devices, merge the entries instead.
 - A node auth key with the properties above, in `.env` as `TS_AUTHKEY`.
-- Lab clients run Tailscale tagged `tag:ambermist-consumer` and hold the API key. They need outbound
-  TCP 443 and UDP, nothing inbound.
+- One lab gateway runs Tailscale tagged `tag:ambermist-consumer` and holds no key; it needs outbound
+  TCP 443 and UDP, nothing inbound. Every other lab client reaches the API through it over plain
+  HTTP and holds the API key itself. [ADR 0006](docs/adr/0006-lab-gateway-for-llm-access.md) says why.
 
 ## The compute stack in detail
 
@@ -200,8 +205,9 @@ plus the build.
 The API is `http://ambermist-h200:8080/v1` on the tailnet (full name
 `http://ambermist-h200.<tailnet>.ts.net:8080/v1`, printed by `provision.sh`) with
 `Authorization: Bearer $AMB_API_KEY`. The name survives rebuilds; the node's 100.x address doesn't.
-Tailscale encrypts the traffic. Public 8080 is closed. Lab clients get 8080 only (not SSH); the
-tailnet policy decides who connects. From a host that isn't on the tailnet, use an SSH tunnel; it
+Tailscale encrypts the traffic. Public 8080 is closed. The lab gateway gets 8080 only (not SSH); the
+tailnet policy decides who connects. Lab clients use the gateway's address instead
+([docs/lab-gateway.md](docs/lab-gateway.md)). From a host that isn't on the tailnet, use an SSH tunnel; it
 reaches the same nginx:
 
 ```bash

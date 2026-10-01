@@ -1,120 +1,48 @@
-# CALDERA on Kali with a remote LLM over Tailscale
+# CALDERA with a remote LLM through the lab gateway
 
-Run these commands on Kali in Bash, as your normal user. If your terminal uses
+Run these commands on the CALDERA host in Bash, as your normal user. If your terminal uses
 Zsh or another shell, run `bash` once and wait for its prompt before pasting the
 command blocks. The `bash` label on a Markdown code fence only controls syntax
 highlighting; it does not select the shell. Kali adopted Zsh as its default for
 new desktop installations in [2020.4](https://www.kali.org/blog/kali-linux-2020-4-release/).
 
-This guide is for a fresh CALDERA installation and a Kali device that has not
-joined Tailscale yet. The H200 must already be running and joined to the same
-tailnet.
+This guide is for a fresh CALDERA installation on any lab host. That host does **not** join
+Tailscale: it reaches the inference tier through the lab gateway, the one machine on the
+tailnet. See [the lab gateway](lab-gateway.md) and
+[ADR 0006](adr/0006-lab-gateway-for-llm-access.md). The gateway must already be configured,
+and the H200 running and joined to the tailnet.
 
-The path is: browser on Kali → CALDERA with the MCP planning plugin → Tailscale →
-nginx at `ambermist-h200:8080` → llama.cpp at `127.0.0.1:8081` on the H200. The API base is
-`http://ambermist-h200:8080/v1`, and its model alias is `reasoner`.
+The path is: browser on the CALDERA host → CALDERA with the MCP planning plugin → the lab
+gateway at `100.66.6.130:8080` → Tailscale → nginx at `ambermist-h200:8080` → llama.cpp at
+`127.0.0.1:8081` on the H200. The API base is `http://100.66.6.130:8080/v1`, and its model
+alias is `reasoner`.
 
 Status: checked against repository configuration and upstream documentation;
-installation and connectivity have not been run on Kali. The repository still
-marks its Phase 6 Tailscale deployment as unverified.
+installation has not been run end to end. The repository still marks its Phase 6
+Tailscale deployment as unverified, and the gateway's leg to the H200 is unverified.
 
-1. **Prepare the predefined Tailscale key.**
+1. **Point the host at the lab gateway.**
 
-   **Kali must use a dedicated Tailscale consumer enrollment key, not an admin key.**
-   Create it for the H200's tailnet with only `tag:ambermist-consumer`. Do not
-   reuse keys intended for administrator devices or H200 nodes. An administrator
-   may generate this key, but Kali must enroll with the consumer identity and
-   permissions.
-
-   Enable **Pre-approved** if device approval is required. Disable **Ephemeral**
-   for a persistent Kali machine. Use a one-off key for one machine; enable
-   **Reusable** only for multiple enrollments. If Tailnet Lock is enabled, the
-   key also needs the required signature. These settings permit enrollment
-   without a browser login. See [Tailscale auth keys](https://tailscale.com/docs/features/access-control/auth-keys).
-
-   The [infrastructure README](../README.md#prerequisites) specifies that its
-   `TS_AUTHKEY` enrolls H200 nodes tagged `tag:ambermist`. Keep that key separate. The
-   [repository policy](../ops/tailnet-policy.hujson) grants the Kali consumer tag
-   access to the H200 on TCP 8080. If an auth key appeared in chat or shared logs,
-   revoke it and use a replacement. Revoking an auth key does not disconnect
-   devices already enrolled with it.
-
-   Save only the Kali enrollment key in a private file on Kali:
+   Nothing to install here: no Tailscale, no enrollment key, no MagicDNS. Confirm this
+   host sits inside `100.66.6.0/24`, the range the gateway serves, and that the gateway
+   answers:
 
    ```bash
-   set +x
-   umask 077
-   mkdir -p ~/.config/ambermist-kali
-   chmod 700 ~/.config/ambermist-kali
-   touch ~/.config/ambermist-kali/.env
-   chmod 600 ~/.config/ambermist-kali/.env
-   nano ~/.config/ambermist-kali/.env
-   ```
-
-   In the editor, add this entry with your predefined consumer key. Do not paste
-   the real value into a shell command or this manual:
-
-   ```dotenv
-   TS_AUTHKEY='REPLACE_WITH_KALI_CONSUMER_AUTH_KEY'
-   ```
-
-2. **Install Tailscale and join with the key.**
-
-   If Tailscale is not installed:
-
-   ```bash
-   sudo apt update
-   sudo apt install -y curl ca-certificates
-   curl --fail --show-error --silent --location https://tailscale.com/install.sh | sh
-   sudo systemctl enable --now tailscaled
-   ```
-
-   Register Kali. The subshell loads the private `.env`, writes a temporary file
-   with mode 0600, and removes that temporary file afterward. Only its path is
-   passed to Tailscale:
-
-   ```bash
-   (
-     set +x
-     set -e
-     umask 077
-     cd ~/.config/ambermist-kali
-     set -a; source .env; set +a
-     : "${TS_AUTHKEY:?Set TS_AUTHKEY in the Kali .env first}"
-     auth_key_file=$(mktemp)
-     trap 'rm -f -- "$auth_key_file"' EXIT
-     printf '%s' "$TS_AUTHKEY" > "$auth_key_file"
-     unset TS_AUTHKEY
-     sudo tailscale up \
-       --auth-key="file:$auth_key_file" \
-       --hostname=kali-caldera \
-       --accept-dns=true
-   )
-   ```
-
-   The key supplies the tag automatically. The `file:` syntax is documented in
-   [tailscale up](https://tailscale.com/docs/reference/tailscale-cli/up).
-   Confirm in the admin console that Kali has `tag:ambermist-consumer`, the H200
-   has `tag:ambermist`, and the repository's grant is applied.
-
-   If Kali is already enrolled, check its identity and tags before changing
-   them. Supplying another auth key to an already authenticated device does not
-   establish that it switched identity.
-
-   Test the actual API port; a successful Tailscale ping alone is insufficient:
-
-   ```bash
-   tailscale ping ambermist-h200
+   ip -4 addr show scope global | grep inet
    curl --fail --show-error --connect-timeout 10 --max-time 15 \
-     http://ambermist-h200:8080/health
+     http://100.66.6.130:8080/health
    ```
 
-   Expect a healthy response. A hostname error points to MagicDNS; a timeout
-   points to node availability, access policy, or firewall configuration. HTTP
-   503 can mean the model is loading. Resolve this before proceeding. Normal
-   reboots use the saved device identity and do not require the enrollment key.
+   Expect a healthy response. `502` means the gateway is reachable but the H200 is not —
+   check that the node is joined to the tailnet. A refused connection means this host is
+   outside the served subnet, or nginx on the gateway is not running. Resolve either
+   before proceeding.
 
-3. **Install CALDERA and the MCP planning plugin.**
+   If CALDERA runs on the gateway host itself, `http://ambermist-h200:8080/v1` also works
+   there, straight over the tailnet. The gateway address works from anywhere in the lab
+   and is the form used below.
+
+2. **Install CALDERA and the MCP planning plugin.**
 
    These development revisions avoid the known dependency mismatch between
    CALDERA 5.3.0 and the newer MCP plugin. They are not an end-to-end tested pair.
@@ -147,68 +75,85 @@ marks its Phase 6 Tailscale deployment as unverified.
    [uv's isolated Python installation](https://docs.astral.sh/uv/guides/install-python/)
    and the [MCP installation procedure](https://github.com/mitre/mcp#installation).
 
-4. **Create private CALDERA and LLM credentials.**
+3. **Create private CALDERA and LLM credentials.**
 
-   From `~/caldera`, with `.venv` active, run the following. Enter a new CALDERA
-   login password and the existing LLM bearer key, `AMB_API_KEY`, at the hidden
-   prompts. The Tailscale auth key is only for device enrollment; it is not the
-   LLM API key. This script refuses to overwrite existing configuration.
+   In `~/caldera`, create a Python file with a text editor:
 
    ```bash
-   python - <<'PY'
-   import getpass
-   import os
-   import secrets
-   import shlex
-   from pathlib import Path
-
-   import yaml
-   from app.utility.config_util import hash_config_creds
-
-   main = Path("conf/local.yml")
-   env = Path("plugins/mcp/.env")
-   if main.exists() or env.exists():
-       raise SystemExit("Existing configuration found; do not overwrite it.")
-
-   password = getpass.getpass("New CALDERA red password: ")
-   llm_key = getpass.getpass("Existing AMB_API_KEY: ")
-   if not password or not llm_key:
-       raise SystemExit("Both values are required.")
-
-   os.umask(0o077)
-   config = yaml.safe_load(Path("conf/default.yml").read_text())
-   for name in ("api_key_red", "api_key_blue", "crypt_salt", "encryption_key"):
-       config[name] = secrets.token_urlsafe(32)
-   caldera_key = config["api_key_red"]
-   config["users"] = {"red": {"red": password}}
-   config["host"] = "127.0.0.1"
-   config["port"] = 8888
-   config["plugins"] = ["magma", "sandcat", "stockpile", "mcp"]
-   for name, value in list(config.items()):
-       if name.startswith("app.contact.") and isinstance(value, str):
-           config[name] = value.replace("0.0.0.0", "127.0.0.1")
-   hash_config_creds(config)
-   main.write_text(yaml.safe_dump(config))
-
-   settings = {
-       "MCP_LLM_API_BASE": "http://ambermist-h200:8080/v1",
-       "MCP_LLM_API_KEY": llm_key,
-       "CALDERA_URL": "http://127.0.0.1:8888",
-       "CORE_CALDERA_API_KEY": caldera_key,
-   }
-   env.write_text("".join(
-       f"{name}={shlex.quote(value)}\n" for name, value in settings.items()
-   ))
-   print("Private configuration created.")
-   PY
+   cd ~/caldera
+   nano setup_credentials.py
    ```
 
-   CALDERA initially listens on loopback, including agent contacts. Remote lab
-   agents would need a reachable contact address configured separately. Its
-   hashed credentials and the plugin's saved API token follow the pinned
-   [CALDERA credential handling](https://github.com/apache/caldera/blob/cb8d6a8160e0f4990af323a7c071d5e8482b42c7/app/utility/config_util.py).
+   Paste the following Python code into the editor. Copy only the code, starting
+   with `import` at the beginning of the first line. This code block is at the
+   left margin so it can also be copied from the Markdown source in an editor.
 
-5. **Configure the remote model.**
+```python
+import getpass
+import os
+import secrets
+import shlex
+from pathlib import Path
+
+import yaml
+from app.utility.config_util import hash_config_creds
+
+main = Path("conf/local.yml")
+env = Path("plugins/mcp/.env")
+if main.exists() or env.exists():
+    raise SystemExit("Existing configuration found; do not overwrite it.")
+
+password = getpass.getpass("New CALDERA red password: ")
+llm_key = getpass.getpass("Existing AMB_API_KEY: ")
+if not password or not llm_key:
+    raise SystemExit("Both values are required.")
+
+os.umask(0o077)
+config = yaml.safe_load(Path("conf/default.yml").read_text())
+for name in ("api_key_red", "api_key_blue", "crypt_salt", "encryption_key"):
+    config[name] = secrets.token_urlsafe(32)
+caldera_key = config["api_key_red"]
+config["users"] = {"red": {"red": password}}
+config["host"] = "127.0.0.1"
+config["port"] = 8888
+config["plugins"] = ["magma", "sandcat", "stockpile", "mcp"]
+for name, value in list(config.items()):
+    if name.startswith("app.contact.") and isinstance(value, str):
+        config[name] = value.replace("0.0.0.0", "127.0.0.1")
+hash_config_creds(config)
+main.write_text(yaml.safe_dump(config))
+
+settings = {
+    "MCP_LLM_API_BASE": "http://100.66.6.130:8080/v1",
+    "MCP_LLM_API_KEY": llm_key,
+    "CALDERA_URL": "http://127.0.0.1:8888",
+    "CORE_CALDERA_API_KEY": caldera_key,
+}
+env.write_text("".join(
+    f"{name}={shlex.quote(value)}\n" for name, value in settings.items()
+))
+print("Private configuration created.")
+```
+
+Save with `Ctrl+O`, Enter, then exit with `Ctrl+X`. Run it from `~/caldera`
+with `.venv` active; the file command works from Bash or Zsh:
+
+```bash
+cd ~/caldera
+source .venv/bin/activate
+python setup_credentials.py
+```
+
+Enter a new CALDERA login password and the existing LLM bearer key,
+`AMB_API_KEY`, at the hidden prompts. This is the same key every lab client holds; the
+gateway passes the header through untouched and the H200 validates it, so the gateway
+itself stores no credential. The script refuses to overwrite existing
+configuration. CALDERA initially listens on loopback, including agent contacts.
+Remote lab agents would need a reachable contact address configured separately.
+Its hashed credentials and the plugin's saved API token follow the pinned
+[CALDERA credential handling](https://github.com/apache/caldera/blob/cb8d6a8160e0f4990af323a7c071d5e8482b42c7/app/utility/config_util.py).
+
+4. **Configure the remote model.**
 
    Open `~/caldera/plugins/mcp/conf/local.yml` in an editor and set:
 
@@ -216,7 +161,7 @@ marks its Phase 6 Tailscale deployment as unverified.
    llm:
      provider: openai_compatible
      model: openai/reasoner
-     api_base: http://ambermist-h200:8080/v1
+     api_base: http://100.66.6.130:8080/v1
      offline: false
      temperature: 0.0
      max_tokens: 4096
@@ -236,7 +181,7 @@ marks its Phase 6 Tailscale deployment as unverified.
    defaults. Start with short requests: tool descriptions, history, and output
    must all fit, and longer planning workflows remain unqualified.
 
-6. **Verify an authenticated model response.**
+5. **Verify an authenticated model response.**
 
    ```bash
    cd ~/caldera/plugins/mcp
@@ -280,7 +225,7 @@ marks its Phase 6 Tailscale deployment as unverified.
    here means the LLM bearer key needs checking. This verifies connectivity and
    basic inference; it does not qualify the planning workflow.
 
-7. **Start CALDERA.**
+6. **Start CALDERA.**
 
    ```bash
    cd ~/caldera
@@ -290,7 +235,7 @@ marks its Phase 6 Tailscale deployment as unverified.
 
    Open `http://127.0.0.1:8888` in Kali's browser and log in as `red` with the
    password you chose. In **MCP → Global Model Configuration**, confirm the API
-   base `http://ambermist-h200:8080/v1`, model `openai/reasoner`, and output budget
+   base `http://100.66.6.130:8080/v1`, model `openai/reasoner`, and output budget
    `4096`. Start by asking it to list available CALDERA agents and summarize
    their capabilities. Then try a short planning request for your lab.
 
