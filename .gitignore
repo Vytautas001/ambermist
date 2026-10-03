@@ -6,6 +6,7 @@
 *.tfplan
 crash.log
 infra/terraform.tfvars
+**/terraform.tfvars
 
 # Secrets — never commit. See .env.example.
 .env
