@@ -294,3 +294,25 @@ from that one fact. The decision it forced is [ADR 0006](docs/adr/0006-lab-gatew
 - **Not verified:** the gateway's leg to the H200. The node was not joined to the tailnet
   on 2026-10-01, so `/health` through the gateway returns 502 and no inference has gone
   through this path.
+
+## FIN-03 fallback model volume (2026-10-03)
+
+- **Checked 1 — verified from the read-only plan:** importing a volume with the provider's
+  omitted `location` and `on_spot_discontinue` attributes requires ignoring both ForceNew
+  attributes. `ignore_changes = [location, on_spot_discontinue]` plans one import with no
+  add/change/destroy operations.
+- **Checked 2 — verified by running it:** moving the existing FIN-02 volume to
+  `verda_volume.model["FIN-02"]` planned and applied with 0 add, 0 change, 0 destroy. The
+  state output is now the site-keyed `model_volume_ids` map, retaining the existing volume ID.
+- **Picker — verified with focused mocked API scenarios:** a running `ambermist-h200` is left
+  unchanged; only detached volumes named exactly `ambermist-model` are candidates; FIN-02 is
+  preferred and a detached FIN-03 volume is selected as the fallback; no candidate or no spot
+  candidate exits 2.
+- **Clone — verified:** the request started at 2026-10-03 11:41:14 UTC. The API returned the
+  destination ID in a one-element JSON list, and the Verda console showed it cloning. The
+  destination `f64e68e9-e379-442b-ac20-10def731f87d` was later observed by the read-only fleet
+  check by 11:49:03 UTC as `detached`, 140 GiB, FIN-03. The duplicate `ambermist-model` name was
+  accepted. The exact completion time and any billing-page charge were not checked.
+- The volume API documentation has no `on_spot_discontinue` field; whether a cloned or existing
+  volume is protected from spot reclaim is unverified.
+- No FIN-03 node launch was performed; the operator did not approve GPU time for step 7.

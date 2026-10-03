@@ -7,9 +7,11 @@ Credentials come from VERDA_CLIENT_ID / VERDA_CLIENT_SECRET (never printed).
   fleet-check.py --pick-site   also choose the site (see below)
   fleet-check.py --reap-os     also delete detached ambermist-*-os volumes
 
---pick-site: if the volume ambermist-model exists, its location is the site.
-Otherwise the first of FIN-02, FIN-01, FIN-03 with a spot H200 is written to
-infra/storage/terraform.tfvars. If no site has a spot H200, exit 2.
+--pick-site: if ambermist-h200 exists, leave the compute selection unchanged.
+Otherwise choose the first detached ambermist-model volume in FIN-02, FIN-01,
+FIN-03 that has a spot H200 and write its location to
+infra/compute/terraform.tfvars. If no eligible volume or spot site exists,
+exit 2.
 """
 import argparse
 import json
@@ -23,7 +25,7 @@ SKU = "1H200.141S.44V"
 OWN_INSTANCE = "ambermist-h200"
 MODEL_VOLUME = "ambermist-model"
 SITE_ORDER = ["FIN-02", "FIN-01", "FIN-03"]
-TFVARS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "infra", "storage", "terraform.tfvars")
+TFVARS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "infra", "compute", "terraform.tfvars")
 
 
 def request(method, path, token=None, body=None):
@@ -107,18 +109,32 @@ def main():
         print(f"{site}  spot={spot.get(site, False)}  on-demand={ondemand.get(site, False)}")
 
     if args.pick_site:
-        model = [v for v in volumes if v.get("name") == MODEL_VOLUME]
-        if model:
-            print(f"site: {model[0].get('location')} (location of existing {MODEL_VOLUME}; nothing changed)")
+        own = next((i for i in instances if i.get("hostname") == OWN_INSTANCE), None)
+        if own:
+            print(f"site: {own.get('location')} ({OWN_INSTANCE} is running there; nothing changed)")
         else:
-            pick = next((s for s in SITE_ORDER if spot.get(s)), None)
-            if pick is None:
-                print("no site has a spot H200. On-demand H200 at: "
-                      + (", ".join(s for s, ok in sorted(ondemand.items()) if ok) or "none"))
+            candidates = {
+                v.get("location") for v in volumes
+                if v.get("name") == MODEL_VOLUME and v.get("status") == "detached"
+            }
+            candidates &= set(SITE_ORDER)
+            if not candidates:
+                print(f"no detached {MODEL_VOLUME} volume is available at a candidate site")
                 return 2
+
+            pick = next((s for s in SITE_ORDER if s in candidates and spot.get(s)), None)
+            if pick is None:
+                sites = ", ".join(
+                    f"{site}={ondemand.get(site, False)}"
+                    for site in SITE_ORDER if site in candidates
+                )
+                print(f"no candidate site has a spot H200; on-demand availability: {sites}")
+                return 2
+
             with open(TFVARS, "w") as f:
                 f.write(f'location = "{pick}"\n')
-            print(f"site: {pick} (written to infra/storage/terraform.tfvars)")
+            fallback = "; fallback" if pick != "FIN-02" else ""
+            print(f"site: {pick} (written to infra/compute/terraform.tfvars{fallback})")
     return rc
 
 

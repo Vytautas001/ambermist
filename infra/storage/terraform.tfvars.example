@@ -1,2 +1,2 @@
-# Written by ops/fleet-check.py --pick-site until the model volume exists.
-location = "FIN-02"
+# Edit by hand. Keep one copy of the model per configured site.
+locations = ["FIN-02", "FIN-03"]

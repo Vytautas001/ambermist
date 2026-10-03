@@ -1,0 +1,2 @@
+# Written by ops/fleet-check.py --pick-site, or set explicitly for a plan/apply.
+location = "FIN-02"

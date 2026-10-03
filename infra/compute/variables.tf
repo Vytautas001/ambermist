@@ -7,6 +7,15 @@ variable "owner" {
   type = string
 }
 
+variable "location" {
+  type        = string
+  description = "Site of the model volume to use. ops/fleet-check.py --pick-site writes it to terraform.tfvars."
+  validation {
+    condition     = contains(["FIN-01", "FIN-02", "FIN-03"], var.location)
+    error_message = "location must be FIN-01, FIN-02 or FIN-03."
+  }
+}
+
 variable "instance_type" {
   type    = string
   default = "1H200.141S.44V"
