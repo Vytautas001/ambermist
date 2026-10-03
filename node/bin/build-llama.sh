@@ -2,6 +2,9 @@
 # Build llama-server at the pinned commit in a CUDA container (plan step 20).
 set -euo pipefail
 . /opt/ambermist/pins/llama.cpp.conf
+# Build for this node's GPU: 90 on H100/H200, 120 on RTX PRO 6000 Blackwell.
+CUDA_ARCH=$(nvidia-smi -i 0 --query-gpu=compute_cap --format=csv,noheader | tr -d .)
+[[ $CUDA_ARCH =~ ^[0-9]+$ ]] || { echo "build: cannot read the GPU compute capability" >&2; exit 1; }
 key="${LLAMA_SHA:0:12}-sm${CUDA_ARCH}-$(printf %s "$BUILD_IMAGE" | sha256sum | cut -c1-8)"
 out=/srv/build/llama.cpp/$key
 src=/srv/build/src/llama.cpp

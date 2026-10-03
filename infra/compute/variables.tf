@@ -17,11 +17,15 @@ variable "location" {
 }
 
 variable "instance_type" {
-  type    = string
-  default = "1H200.141S.44V"
+  type        = string
+  default     = "1H200.141S.44V"
+  description = "ops/fleet-check.py --pick-site writes it to terraform.tfvars and checks the fleet cap across held nodes."
+  # Keep in sync with ALLOWED in ops/fleet-check.py.
   validation {
-    condition     = contains(["1H200.141S.44V"], var.instance_type)
-    error_message = "Only one H200 is allowed for this tier."
+    condition = contains([
+      "1H200.141S.44V", "2RTXPRO6000.60V",
+    ], var.instance_type)
+    error_message = "Only SKUs within the fleet cap (1 H200, 2 RTX PRO 6000 GPUs) are allowed."
   }
 }
 
@@ -31,8 +35,9 @@ variable "image" {
 }
 
 variable "use_spot" {
-  type    = bool
-  default = true
+  type        = bool
+  default     = true
+  description = "ops/fleet-check.py --pick-site --type spot|on-demand writes it to terraform.tfvars."
 }
 
 variable "os_volume_size_gib" {

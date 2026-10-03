@@ -25,8 +25,9 @@ Two OpenTofu stacks, one node-side bootstrap, and a few scripts:
 | `infra/storage/` | The 140 GiB NVMe `ambermist-model` volumes, one per site in `locations` (`prevent_destroy`, kept when a spot node is reclaimed). FIN-02 is primary; FIN-03 is the fallback. |
 | `infra/compute/` | Registers your public key with Verda, the boot script, the spot H200 instance in the selected site, and that site's volume attachment. Created and destroyed every session. |
 | `node/` | Copied to `/opt/ambermist` on the node: pins, `serving.conf`, `bootstrap.sh`, and `bin/` (download, build, preflight, health check). `node/etc/` mirrors the files installed under `/etc`: systemd units and timers, the nginx site, logrotate. Knows nothing about Verda. |
-| `ops/fleet-check.py` | Read-only account check, fleet cap, orphan volumes, H200 availability, site pick. |
+| `ops/fleet-check.py` | Account check, fleet cap, orphan volumes, H200 availability, site pick, local state vs. account. Read-only unless given a delete or clean flag. |
 | `ops/provision.sh` | Runs from your workstation: copies `node/`, pushes secrets, runs the stages over SSH. |
+| `ops/session.sh` | One command per session step: `check`/`clean` stale compute state, `up` (claim a spot H200, apply, provision), `down compute\|volumes\|all`. |
 | `ops/tailnet-policy.hujson` | The tailnet policy (who reaches the node's ports 22 and 8080). Applied by hand in the Tailscale admin console. |
 | `ops/lab/gateway.sh` | Configures the lab gateway: Tailscale on the tailnet side, nginx on the lab side. Staged and safe to rerun. |
 | `ops/accept/t1.py` | T1 tool-call round trip through the tunnel. Standard library only. |
@@ -85,12 +86,12 @@ Resources it manages:
 | :-- | :-- |
 | `verda_ssh_key.op` | Uploads your public key (the file at `ssh_public_key_path`) to Verda as `ambermist-operator` and installs it on the instance so you can log in as `root`. No new key is generated; the entry is removed on `destroy`. |
 | `verda_startup_script.boot` | Renders `boot.sh.tftpl` (nftables firewall only, no secrets). Stored in plaintext in the Verda API and in state. |
-| `verda_instance.node` | The single `1H200.141S.44V` instance, hostname `ambermist-h200`, in `location`. Gets a 60 GiB NVMe OS volume `ambermist-h200-os`. |
+| `verda_instance.node` | The single `instance_type` instance (default `1H200.141S.44V`), hostname `ambermist-h200` whatever the SKU, in `location`. Gets a 60 GiB NVMe OS volume `ambermist-h200-os`. |
 | `verda_volume_attachment.model` | Attaches `model_volume_ids[location]`. The only resource that waits until the instance is reachable. |
 | `terraform_data.identity` | Records SKU, spot flag, and the hash of the boot script. Any change to them **replaces** the instance (see below). |
 
 Variables (`infra/compute/variables.tf`). Set them in `.env` as `TF_VAR_<name>` (see `.env.example`),
-except for `location`, which is normally written to `infra/compute/terraform.tfvars` by the picker.
+except for `location`, `instance_type` and `use_spot`, which are normally written to `infra/compute/terraform.tfvars` by the picker.
 Precedence is `-var` over `terraform.tfvars` over `TF_VAR_*`:
 
 | Variable | Default | Notes |
@@ -99,8 +100,8 @@ Precedence is `-var` over `terraform.tfvars` over `TF_VAR_*`:
 | `location` | none, required | Model-volume site. `fleet-check.py --pick-site` writes `infra/compute/terraform.tfvars`; `-var location=...` also works. |
 | `ssh_public_key_path` | none, required | Path to your public key file (`.pub`). |
 | `admin_cidrs` | none, required | Firewall allow-list for SSH (port 22). Must not contain `0.0.0.0/0`. |
-| `instance_type` | `1H200.141S.44V` | Validation rejects anything else: exactly one H200 is allowed. |
-| `use_spot` | `true` | Spot is about half the on-demand price and can be reclaimed. Set `-var use_spot=false` only after asking. |
+| `instance_type` | `1H200.141S.44V` | Written by `--pick-site --instance`. Validation allows only SKUs within the fleet cap: `1H200.141S.44V`, `2RTXPRO6000.60V`. Only the H200 is qualified to serve the model. |
+| `use_spot` | `true` | Written by `--pick-site --type spot\|on-demand`. Spot is about half the on-demand price and can be reclaimed. |
 | `image` | `24.04.cuda12.9.docker` | Ubuntu 24.04 with CUDA 12.9 and Docker. |
 | `os_volume_size_gib` | `60` | |
 
@@ -140,16 +141,68 @@ ops/provision.sh "$(tofu -chdir=infra/compute output -raw public_ip)"
 ```
 
 If no candidate site has a spot H200, `--pick-site` prints on-demand availability at the candidate
-sites; ask before using on-demand. It never switches to on-demand or relaunches automatically.
+sites; pass `--type on-demand` to pick an on-demand site instead. It never switches by itself and
+never relaunches automatically.
 Never change `location` while an instance exists. When you finish,
 `tofu -chdir=infra/compute destroy`.
+
+## The short path: `ops/session.sh`
+
+`ops/session.sh` runs the steps in "Spin up" and "Tear down" below. It loads `.env` itself.
+
+```bash
+ops/session.sh check                 # read-only; exit 3 = compute state holds a dead instance
+ops/session.sh clean                 # drop that instance from compute state
+ops/session.sh up --yes --wait       # claim a spot H200 as soon as one appears, apply, provision
+ops/session.sh up --yes --wait=10s   # the same hunt, checking every 10 seconds
+ops/session.sh up --yes --wait=5m    # ... or every 5 minutes, for a hunt left running for hours
+ops/session.sh up --type on-demand                      # on-demand instead of spot
+ops/session.sh up --site FIN-03 --instance 1H200.141S.44V  # choose the site and/or the SKU
+ops/session.sh down compute          # tailscale logout, destroy, reap detached OS volumes
+ops/session.sh down volumes          # delete the model volumes: the weights are lost
+ops/session.sh down all              # both
+```
+
+- **Stale state.** After a spot reclaim or a zero balance, Verda keeps the instance with status
+  `discontinued`. `GET /instances` hides it, but the provider still reads it by ID, so it stays in
+  state and `plan` tries to attach the volume to it. `check` reports that (or a 404); `clean`,
+  `up` and `down` remove the instance and its attachment with `tofu state rm`. All of them stop
+  if the account has an `ambermist-h200` or `ambermist-model` the local state doesn't know about,
+  because applying would create a duplicate.
+- **`up`** cleans, applies `infra/storage`, runs `--pick-site`, applies `infra/compute`, waits for
+  `public_ip`, clears that IP's old host key, and runs `provision.sh`. The storage apply changes
+  nothing unless `down volumes` ran; then it creates blank volumes and provisioning downloads the
+  weights again. `--yes` passes `-auto-approve`, so GPU billing starts without a prompt.
+  `--wait[=EVERY]` polls every 30 s (or EVERY) while no candidate site has the SKU as the chosen
+  type, and retries an apply that failed before any instance existed. EVERY is seconds or a
+  duration — `10s`, `45s`, `5m`, `2h`, `1h30m` — so a tight hunt can check every ten seconds and a
+  long one can run for hours between polls. Each try logs the time, the try number and how long the
+  wait has run.
+  It never switches between spot and on-demand by itself, never waits out the fleet cap, and stops
+  if a failed apply left an instance in state.
+- **`--type`** is `spot` (default) or `on-demand`: about twice the price, never reclaimed.
+- **`--site`** limits `up` to one model-volume site (only FIN-02 and FIN-03 have one).
+  **`--instance`** picks the SKU (default `1H200.141S.44V`) from those in the `instance_type` row
+  above. The picker
+  counts the GPUs of that family already held by other instances and refuses the SKU if the cap
+  (1 H200, 1 H100, 2 RTX PRO 6000) has no room. With `ambermist-h200` running, asking for a
+  different site, type or SKU is refused; `down compute` first. The node keeps the name
+  `ambermist-h200`, so the gateway and API URL don't change. `build-llama.sh` builds for the GPU
+  it finds (sm90 on H100/H200, sm120 on RTX PRO 6000). Only the H200 is qualified: the model used
+  about 81 GiB of VRAM there, more than an H100 has, and RTX PRO 6000 is untested, so
+  provisioning another SKU may fail at the `serve` stage.
+- **`down`** asks before each part unless `--yes`. `volumes` refuses while compute state holds an
+  instance. `prevent_destroy` blocks `tofu destroy`, so it deletes each volume through the API and
+  then removes it from storage state.
+- `check` and `clean` have run against the real account (`clean` on a copy of the state).
+  `up` and `down` have only run against a mock API with `tofu apply`/`destroy` intercepted.
 
 ## Spin up
 
 ```bash
 set -a; source .env; set +a
 
-# 1. Check the account and pick a detached model-volume site. Exit 1 = another H200 exists: stop.
+# 1. Check the account and pick a detached model-volume site. Exit 1 = the fleet cap has no room: stop.
 python3 ops/fleet-check.py --pick-site
 ```
 
@@ -173,7 +226,7 @@ tofu -chdir=infra/compute output public_ip
 `public_ip` can be `null` right after create. Run `tofu -chdir=infra/compute apply -refresh-only`
 until it is set. If a spot H200 isn't available at the selected site, run `--pick-site` again so it
 can choose the detached fallback volume. If no candidate has spot capacity, ask before switching to
-on-demand (`-var use_spot=false`). Never change `location` while an instance exists.
+on-demand (`--pick-site --type on-demand`). Never change `location` while an instance exists.
 
 The instance boots with a startup script that only installs the nftables firewall (SSH from
 `admin_cidrs`, SSH and 8080 from `tailscale0`, `udp/41641` for tailscaled, everything else
@@ -253,6 +306,8 @@ The two 140 GiB model volumes cost about €56/month in storage.
 ## Spot reclaim
 
 The selected site's model volume is `keep_detached`, so its data survives. The OS disk is deleted.
+Compute state still holds the reclaimed instance (status `discontinued`), and `apply` would try
+to attach the volume to it: run `ops/session.sh clean` first (`up` does it too).
 After a reclaim, run `fleet-check.py --pick-site` and relaunch at the first detached site with spot
 capacity (`tofu -chdir=infra/compute apply` refreshes and recreates the instance; `is_spot` isn't
 updatable in place, so any change to SKU, spot, or the boot script replaces it), then rerun

@@ -1,2 +1,4 @@
 # Written by ops/fleet-check.py --pick-site, or set explicitly for a plan/apply.
-location = "FIN-02"
+location      = "FIN-02"
+instance_type = "1H200.141S.44V"
+use_spot      = true
