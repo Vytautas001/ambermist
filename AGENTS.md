@@ -26,53 +26,39 @@ restore it wholesale.
 
 ## WSL access to the lab over VPN
 
-The user confirmed access worked after adding a host route through OpenConnect
-(2026-10-03). The VPN connected but did not install a route to `100.66.6.130`;
-traffic initially used WSL's default `eth0` route.
-The instructions below route the full lab subnet `100.66.6.0/24`, as requested;
-access to other machines in that subnet has not been verified.
+Run in Bash inside WSL.
 
-Run in the WSL distribution that needs lab access. Reuse an existing VPN
-connection instead of starting another. For a new connection:
+1. Check the VPN PID and interfaces. Reuse an existing connection:
 
-```bash
-sudo openconnect --background --protocol=gp \
-  --authgroup=AmberMIST --user v.kasparavicius \
-  https://gate.ambermist.lt
-```
+   ```bash
+   pgrep -x openconnect
+   ip -br -4 addr
+   ```
 
-Enter passwords at the hidden prompts; portal and gateway may both ask.
-`--background` returns the prompt after connecting. Record the printed PID
-for disconnecting later. Inspect the tunnel and route:
+2. If no OpenConnect process is running, connect and enter passwords when asked:
 
-```bash
-ip -br addr
-ip route get 100.66.6.130
-```
+   ```bash
+   sudo openconnect --background --protocol=gp \
+     --authgroup=AmberMIST --user v.kasparavicius \
+     https://gate.ambermist.lt
+   ```
 
-The working session used `tun1` with address `172.22.11.71`; both may change.
-After connecting, install the subnet route, replacing `tun1` with the actual
-OpenConnect interface. `replace` also updates an existing route for this subnet:
+   Check again with `pgrep -x openconnect` and `ip -br -4 addr`.
+   Match the IP in OpenConnect's `Configured as` message to the interface.
+   **Do not assume `tun1`: the latest session used `tun0`.**
+   The background PID is also printed as `Continuing in background; pid ...`.
 
-```bash
-sudo ip route replace 100.66.6.0/24 dev tun1
-ip route show 100.66.6.0/24
-ip route get 100.66.6.130
-curl -v --noproxy '*' --connect-timeout 5 --max-time 10 \
-  http://100.66.6.130:8080/health
-```
+3. Enter that interface name to route the lab subnet:
 
-The route should use the VPN interface. Keep it limited to `100.66.6.0/24`, not all of
-`100.64.0.0/10`, which can conflict with Tailscale. Ping alone does not establish
-HTTP access. 
-The VPN and manual route do not survive WSL shutdown or Windows reboot.
-Reconnect and check/add the route again. Another terminal in the same running
-WSL distribution can reuse the connection. This command does not save the VPN
-password or authentication cookie for the next launch: authenticate again.
-Shell history may retain the command and username, but not passwords entered
-at hidden prompts. Never put passwords or cookies in this file, command
-arguments, or committed scripts.
+   ```bash
+   read -r -p "VPN interface from the check above (e.g. tun0): " VPN_IF
+   sudo ip route replace 100.66.6.0/24 dev "$VPN_IF"
+   ip route get 100.66.6.130
+   ```
 
-To undo the manual subnet route, use `sudo ip route del 100.66.6.0/24 dev tun1`
-with the actual interface. `No such process` means the route is already absent.
-To disconnect, use `sudo kill -INT <PID>` with the recorded OpenConnect PID.
+   The result must show the selected VPN interface. A default route through
+   that interface already carries lab traffic, even without an explicit `/24`.
+
+After WSL shutdown/reboot, repeat these steps; passwords and routes are not saved
+by this setup. To disconnect, check `pgrep -x openconnect`, then run
+`sudo kill -INT <PID>` using the correct VPN PID.
