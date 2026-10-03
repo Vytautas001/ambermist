@@ -1,0 +1,256 @@
+# ambermist
+
+A self-hosted llama.cpp endpoint (Qwen3.8-Flash-Next Uncensored, Q4_K_M) on one Verda H200.
+This README describes how spin-up works **as of Phase 6**: llama-server runs as a systemd unit on
+`127.0.0.1:8081`, nginx serves the API on port 8080, reachable only over Tailscale at
+`http://ambermist-h200:8080/v1` (public 8080 is closed), a timer restarts a hung server. The Phase 6
+code has not been run yet. The design is in [docs/inference-tier-plan.md](docs/inference-tier-plan.md),
+the Phase 1 task in [docs/phase-1-first-light.md](docs/phase-1-first-light.md), the Phase 6 task in
+[docs/phase-6-tailscale.md](docs/phase-6-tailscale.md), and measured
+facts and gotchas in [LESSONS.md](LESSONS.md). Rules for coding assistants: [AGENTS.md](AGENTS.md).
+
+Lab clients do not join the tailnet themselves: one gateway host carries Tailscale and fronts
+the API on the lab network, because the lab's addresses collide with the range Tailscale claims.
+See [docs/lab-gateway.md](docs/lab-gateway.md) and
+[ADR 0006](docs/adr/0006-lab-gateway-for-llm-access.md). For a CALDERA client, follow
+[CALDERA with a remote LLM through the lab gateway](docs/caldera-kali.md).
+
+## How it fits together
+
+Two OpenTofu stacks, one node-side bootstrap, and a few scripts:
+
+| Part | What it does |
+| :-- | :-- |
+| `infra/storage/` | The 140 GiB NVMe model volume `ambermist-model` (`prevent_destroy`, kept when a spot node is reclaimed). Rarely changes. |
+| `infra/compute/` | Registers your public key with Verda, the boot script, the spot H200 instance, and the volume attachment. Created and destroyed every session. |
+| `node/` | Copied to `/opt/ambermist` on the node: pins, `serving.conf`, `bootstrap.sh`, and `bin/` (download, build, preflight, health check). `node/etc/` mirrors the files installed under `/etc`: systemd units and timers, the nginx site, logrotate. Knows nothing about Verda. |
+| `ops/fleet-check.py` | Read-only account check, fleet cap, orphan volumes, H200 availability, site pick. |
+| `ops/provision.sh` | Runs from your workstation: copies `node/`, pushes secrets, runs the stages over SSH. |
+| `ops/tailnet-policy.hujson` | The tailnet policy (who reaches the node's ports 22 and 8080). Applied by hand in the Tailscale admin console. |
+| `ops/lab/gateway.sh` | Configures the lab gateway: Tailscale on the tailnet side, nginx on the lab side. Staged and safe to rerun. |
+| `ops/accept/t1.py` | T1 tool-call round trip through the tunnel. Standard library only. |
+
+The `.tf` files know volume sizes and the instance SKU, nothing about Qwen or llama.cpp. To
+change the model or runtime, edit `node/pins/` and `node/serving.conf`.
+
+## Prerequisites
+
+- OpenTofu ≥ 1.8, `python3`, `ssh`, `curl`, `jq`.
+- One config file, `.env` in the repo root (gitignored). Copy `.env.example` to `.env` and fill it in.
+  It holds the credentials (`VERDA_CLIENT_ID`, `VERDA_CLIENT_SECRET`, `HF_TOKEN`, `AMB_API_KEY`, `TS_AUTHKEY`), the
+  path to your SSH private key (`SSH_KEY`), and the compute stack settings as `TF_VAR_*` variables
+  (`TF_VAR_owner`, `TF_VAR_admin_cidrs`, `TF_VAR_ssh_public_key_path`). Load it before running anything:
+  `set -a; source .env; set +a`. Never print or commit it.
+  - `AMB_API_KEY` is the bearer key clients send to llama-server (`amb-` + `openssl rand -hex 32`).
+  - `TS_AUTHKEY` is the node's Tailscale auth key: reusable, ephemeral, pre-approved, tagged
+    `tag:ambermist`, 90-day expiry. Put its expiry date in a comment next to it.
+  - `admin_cidrs` is the only set of addresses the node's firewall lets reach SSH (port 22). If
+    your public IP is outside it, you lock yourself out. The API is not reachable from the internet.
+  - `SSH_KEY` is the path to your **private** key file (used to log in). `TF_VAR_ssh_public_key_path` is
+    the path to the matching **public** key file (`.pub`). OpenTofu reads that file itself, so you never
+    paste key text anywhere.
+  - The one exception is `infra/storage/terraform.tfvars` (just `location = "<site>"`). `fleet-check.py
+    --pick-site` writes it for you; don't edit it by hand.
+
+Tailnet (set up once, by hand):
+
+- A tailnet with MagicDNS on. Put your login in `group:amb-admin` in
+  [ops/tailnet-policy.hujson](ops/tailnet-policy.hujson) and apply it in the admin console (Access
+  controls). The default policy allows everything, so replace or narrow it; if the tailnet has other
+  devices, merge the entries instead.
+- A node auth key with the properties above, in `.env` as `TS_AUTHKEY`.
+- One lab gateway runs Tailscale tagged `tag:ambermist-consumer` and holds no key; it needs outbound
+  TCP 443 and UDP, nothing inbound. Every other lab client reaches the API through it over plain
+  HTTP and holds the API key itself. [ADR 0006](docs/adr/0006-lab-gateway-for-llm-access.md) says why.
+
+## The compute stack in detail
+
+`infra/compute/` is the disposable half: apply it to get a GPU node, destroy it to stop billing.
+It never creates or deletes the model volume; it only reads that volume's ID and location from the
+storage stack's local state (`infra/storage/terraform.tfstate`, via `terraform_remote_state`). Because
+the location comes from that state, the instance always lands in the same site as the weights.
+
+**Prerequisite: the storage stack must have been applied from this same checkout.** That apply
+(step 2 under "Spin up" below) is what creates `infra/storage/terraform.tfstate`. The file is
+gitignored, so a fresh clone or a different machine doesn't have it, and `tofu plan` in
+`infra/compute` fails because it can't read the volume ID and location. If the volume already exists
+in Verda but the state file is missing, copy the state file over from the machine that created the
+volume. Don't re-apply the storage stack blindly: it would try to create a second `ambermist-model`.
+
+Resources it manages:
+
+| Resource | Purpose |
+| :-- | :-- |
+| `verda_ssh_key.op` | Uploads your public key (the file at `ssh_public_key_path`) to Verda as `ambermist-operator` and installs it on the instance so you can log in as `root`. No new key is generated; the entry is removed on `destroy`. |
+| `verda_startup_script.boot` | Renders `boot.sh.tftpl` (nftables firewall only, no secrets). Stored in plaintext in the Verda API and in state. |
+| `verda_instance.node` | The single `1H200.141S.44V` instance, hostname `ambermist-h200`, in the model volume's site. Gets a 60 GiB NVMe OS volume `ambermist-h200-os`. |
+| `verda_volume_attachment.model` | Attaches the existing `ambermist-model` volume. The only resource that waits until the instance is reachable. |
+| `terraform_data.identity` | Records SKU, spot flag, and the hash of the boot script. Any change to them **replaces** the instance (see below). |
+
+Variables (`infra/compute/variables.tf`). Set them in `.env` as `TF_VAR_<name>` (see `.env.example`). A
+`terraform.tfvars` file in `infra/compute/`, if you still have one, takes precedence over the environment,
+so delete it once you have moved its values to `.env`:
+
+| Variable | Default | Notes |
+| :-- | :-- | :-- |
+| `owner` | none, required | Goes in the instance description. |
+| `ssh_public_key_path` | none, required | Path to your public key file (`.pub`). |
+| `admin_cidrs` | none, required | Firewall allow-list for SSH (port 22). Must not contain `0.0.0.0/0`. |
+| `instance_type` | `1H200.141S.44V` | Validation rejects anything else: exactly one H200 is allowed. |
+| `use_spot` | `true` | Spot is about half the on-demand price and can be reclaimed. Set `-var use_spot=false` only after asking. |
+| `image` | `24.04.cuda12.9.docker` | Ubuntu 24.04 with CUDA 12.9 and Docker. |
+| `os_volume_size_gib` | `60` | |
+
+Behaviours worth knowing:
+
+- **Spot vs on-demand is fixed at creation.** `is_spot` and the boot script can't be updated in
+  place, so `terraform_data.identity` forces a replacement whenever the SKU, the spot flag, or the
+  script body changes. Expect `plan` to show "must be replaced", not "updated in place".
+- **The OS disk is disposable.** On spot, `on_spot_discontinue = "delete_permanently"` deletes the OS
+  volume on reclaim, so `/srv/build` and `/srv/logs` are lost. The model volume is `keep_detached`
+  (set in the storage stack) and survives.
+- **`public_ip` may be `null`** right after create. Run `apply -refresh-only` until it appears.
+- **Billing runs from the moment `apply` starts the instance until `destroy` finishes.** The `ssh`
+  and `burn_warning` outputs are reminders of that.
+- **Outputs:** `instance_id`, `public_ip`, `ssh`, `burn_warning`.
+- **Firewall:** the boot script takes about a minute after the instance is reachable. Only
+  `admin_cidrs` reach port 22 (if your IP isn't listed you can't log in); ports 22 and 8080 are
+  also open on `tailscale0`, where the tailnet policy decides who connects; `udp/41641` is open to
+  all for tailscaled. Changing the rules changes the boot script, which replaces the instance.
+- **State is local** (`infra/compute/terraform.tfstate`, gitignored). Run tofu from the same checkout
+  each time, or it won't know about the running instance.
+
+### Relaunching with an existing model volume
+
+Use this path when `fleet-check.py --pick-site` reports `ambermist-model` as `detached` and prints
+`site: <site> (location of existing ambermist-model; nothing changed)`. Don't touch `infra/storage`.
+
+```bash
+set -a; source .env; set +a
+python3 ops/fleet-check.py --pick-site            # expect: model volume detached, spot=True at its site
+tofu -chdir=infra/compute init                    # only the first time on this checkout
+tofu -chdir=infra/compute plan                    # expect: 5 to add (public key upload, boot script, instance, attachment, identity marker)
+tofu -chdir=infra/compute apply                   # GPU billing starts
+tofu -chdir=infra/compute apply -refresh-only     # repeat until public_ip is set
+ops/provision.sh "$(tofu -chdir=infra/compute output -raw public_ip)"
+```
+
+If `--pick-site` shows `spot=False` for the volume's site, the apply will fail. Retry later or ask
+before using on-demand: the site can't move while the volume holds the weights. When you finish,
+`tofu -chdir=infra/compute destroy`.
+
+## Spin up
+
+```bash
+set -a; source .env; set +a
+
+# 1. Check the account and pick a site. Exit 1 = another H200 exists (fleet cap): stop.
+python3 ops/fleet-check.py --pick-site
+```
+
+`--pick-site` uses the site of `ambermist-model` if it exists. Otherwise it takes the first
+site with a spot H200 (FIN-02, FIN-01, FIN-03) and writes `infra/storage/terraform.tfvars`.
+Availability is not a reservation.
+
+```bash
+# 2. Storage stack (first time only; afterwards it already exists).
+tofu -chdir=infra/storage init
+tofu -chdir=infra/storage apply
+
+# 3. Compute stack. Billing for the GPU starts here (spot, about 2.3/h).
+tofu -chdir=infra/compute init
+tofu -chdir=infra/compute apply
+tofu -chdir=infra/compute output public_ip
+```
+
+`public_ip` can be `null` right after create. Run `tofu -chdir=infra/compute apply -refresh-only`
+until it is set. If a spot H200 isn't available at the volume's site, the apply fails: retry, or ask
+before switching to on-demand (`-var use_spot=false`). The site can't change while the volume
+holds the weights.
+
+The instance boots with a startup script that only installs the nftables firewall (SSH from
+`admin_cidrs`, SSH and 8080 from `tailscale0`, `udp/41641` for tailscaled, everything else
+dropped). It takes about a minute after the instance is reachable, so the first SSH login can see
+no `inet amb` table yet. The script holds no secrets.
+
+```bash
+# 4. Provision the node (about 25 min on a cold volume).
+ops/provision.sh <public_ip>
+```
+
+`provision.sh` waits for SSH (as `root`, `accept-new` host keys), copies `node/` to
+`/opt/ambermist`, creates the `llama` user, and pushes secrets **on stdin only**:
+`AMB_API_KEY` → `/etc/ambermist/llama-api-keys` (root:llama, 0640) and the Hugging Face header →
+`/run/ambermist/hf-auth-header` and `TS_AUTHKEY` → `/run/ambermist/ts-authkey` (both 0600, tmpfs).
+It then runs `node/bootstrap.sh` stages in order:
+
+| Stage | What it does |
+| :-- | :-- |
+| `packages` | Waits until the boot script's firewall is loaded, then installs apt packages (including nginx); prints GPU, driver, and RAM. |
+| `tailscale` | Installs `tailscale` from pkgs.tailscale.com (noble repo) and, unless already running, joins with `tailscale up --auth-key=file:/run/ambermist/ts-authkey --hostname=ambermist-h200 --accept-dns=false`, then deletes the key file. Fails if the device name isn't `ambermist-h200` (a stale device holds it: remove that in the admin console and rerun). Prints the DNS name and tailnet IPv4. |
+| `disks` | Mounts the volume by label `amb-model` at `/srv/models`. Formats only if exactly one blank 140 GiB disk exists; otherwise aborts. |
+| `model` + `build` | Run in parallel. `model`: resumable download of 3 shards, SHA-256 checked against `node/pins/qwen38-uncensored-q4km.sha256`. `build`: llama.cpp at the pinned commit in a CUDA container; fails if `--version` doesn't show the pin. |
+| `t0` | Checks GGUF metadata (`qwen4exp`, `compress_ratios` only 0 and 4) and the server version. |
+| `serve` | Installs `llama-server.service` (on `127.0.0.1:8081`, restarts on failure, `preflight-serve.sh` checks model, build, key file and GPU first) and `llama-healthcheck.timer` (restarts the server after 3 failed `/health` checks 30 s apart; 503 is fine for the first 20 min), and hourly logrotate for `/srv/logs/llama` and `/srv/logs/nginx`. Waits for `/health`. |
+| `nginx` | Refuses to run unless the firewall is loaded. Installs the `ambermist` site on `0.0.0.0:8080` (the firewall admits 8080 only on `tailscale0`): `/health`, `/v1/chat/completions`, `/v1/models` go to llama-server; everything else is 404; more than 12 concurrent API connections get 429. JSON access log (no bodies) in `/srv/logs/nginx/`. |
+
+Every stage is safe to rerun. To run only some: `ops/provision.sh <ip> serve nginx`. Logs are in
+`/srv/logs/bootstrap/<stage>.log` with start and end times in `timeline.log`. `/srv/build` and
+`/srv/logs` are on the spot OS disk and are lost if the instance is reclaimed or destroyed.
+A warm model volume skips the download (`fetch-model.sh` fast path), so a rerun takes a few minutes
+plus the build.
+
+## Use and test
+
+The API is `http://ambermist-h200:8080/v1` on the tailnet (full name
+`http://ambermist-h200.<tailnet>.ts.net:8080/v1`, printed by `provision.sh`) with
+`Authorization: Bearer $AMB_API_KEY`. The name survives rebuilds; the node's 100.x address doesn't.
+Tailscale encrypts the traffic. Public 8080 is closed. The lab gateway gets 8080 only (not SSH); the
+tailnet policy decides who connects. Lab clients use the gateway's address instead
+([docs/lab-gateway.md](docs/lab-gateway.md)). From a host that isn't on the tailnet, use an SSH tunnel; it
+reaches the same nginx:
+
+```bash
+ssh -i "${SSH_KEY:-$HOME/.ssh/verda}" -N -L 8080:127.0.0.1:8080 root@<public_ip> &
+python3 ops/accept/t1.py     # T1 against http://127.0.0.1:8080; add --base http://ambermist-h200:8080 from a tailnet host
+```
+
+Results go to `~/ambermist-runs/<date>/t1-<time>.json`.
+
+Logs: requests in `/srv/logs/nginx/access.json.log` (no bodies), server and per-request token
+timings in `/srv/logs/llama/server.log`.
+
+The default log verbosity hides the loader lines (offload count, buffer sizes). To see them, on
+the node run `echo 'LLAMA_EXTRA_ARGS="-lv 5"' >> /opt/ambermist/serving.conf && systemctl restart llama-server`,
+then read `/srv/logs/llama/server.log`. The next `provision.sh` resets `serving.conf`.
+
+## Tear down
+
+```bash
+ssh -i "${SSH_KEY:-$HOME/.ssh/verda}" root@<public_ip> tailscale logout   # first: frees the name ambermist-h200 at once
+tofu -chdir=infra/compute destroy       # stops GPU billing; the model volume stays
+python3 ops/fleet-check.py              # expect: no instances, model volume detached
+python3 ops/fleet-check.py --reap-os    # only when you want detached ambermist-*-os volumes deleted
+```
+
+Log out first: the node is an ephemeral device, and logging out should remove it from the tailnet
+at once (unverified), so the next node gets the name `ambermist-h200` instead of `ambermist-h200-1`. Destroy at the
+end of every session. A destroyed instance can leave a detached
+`ambermist-h200-os` volume that keeps billing (about €12/month); `fleet-check.py` lists it.
+Copy anything you want to keep from `/srv/logs` first. Never destroy the storage stack; the
+`prevent_destroy` on the model volume is deliberate.
+
+## Spot reclaim
+
+The model volume is `keep_detached`, so its data survives. The OS disk is deleted. After a
+reclaim, `tofu -chdir=infra/compute apply` refreshes and recreates the instance (`is_spot` isn't
+updatable in place, so any change to SKU, spot, or the boot script replaces it), then rerun
+`ops/provision.sh`. A reclaimed node never logged out, so its device still holds `ambermist-h200`:
+remove it in the Tailscale admin console (Machines) before re-provisioning, or the `tailscale`
+stage fails. This path has not been exercised yet.
+
+## Not built yet
+
+TLS (the API is plain HTTP inside the tailnet), `make` targets, build and logs volumes, SOPS secrets, and tests T2–T8. Restart-on-crash, the health-check
+restart, reboot recovery, log rotation and the 429 cap are configured but have not been exercised.
+See the phases in the plan.

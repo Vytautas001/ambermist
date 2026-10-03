@@ -1,0 +1,2 @@
+# Written by ops/fleet-check.py --pick-site until the model volume exists.
+location = "FIN-02"

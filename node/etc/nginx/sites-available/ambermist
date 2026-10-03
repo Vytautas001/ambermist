@@ -1,0 +1,33 @@
+limit_conn_zone $server_addr zone=llm_total:1m;
+log_format llm_json escape=json '{"ts":$msec,"client":"$remote_addr","method":"$request_method",'
+  '"uri":"$uri","status":$status,"req_bytes":$request_length,"resp_bytes":$bytes_sent,'
+  '"rt":$request_time,"urt":"$upstream_response_time","ustatus":"$upstream_status"}';
+
+server {
+  listen 0.0.0.0:8080;           # nftables admits only tailscale0
+  access_log /srv/logs/nginx/access.json.log llm_json;   # no bodies, so no prompt content
+  error_log  /srv/logs/nginx/error.log warn;
+  client_max_body_size 8m;
+
+  location = /health { proxy_pass http://127.0.0.1:8081; access_log off; }
+
+  location ~ ^/v1/(chat/completions|models)$ {
+    limit_conn llm_total 12;              # 4 running + 8 queued in llama-server
+    limit_conn_status 429;
+    error_page 429 = @busy;
+    proxy_pass http://127.0.0.1:8081;
+    proxy_http_version 1.1;
+    proxy_set_header Connection "";
+    proxy_buffering off;                  # SSE streaming
+    proxy_read_timeout 900s;
+    proxy_send_timeout 900s;
+  }
+
+  location @busy {
+    add_header Retry-After 15 always;
+    default_type application/json;
+    return 429 '{"error":{"code":429,"type":"rate_limit_error","message":"inference tier at capacity"}}';
+  }
+
+  location / { return 404; }
+}

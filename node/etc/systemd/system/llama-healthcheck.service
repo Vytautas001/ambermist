@@ -1,0 +1,6 @@
+[Unit]
+Description=Restart llama-server when /health keeps failing
+
+[Service]
+Type=oneshot
+ExecStart=/opt/ambermist/bin/healthcheck.sh
