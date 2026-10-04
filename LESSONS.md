@@ -332,19 +332,47 @@ from that one fact. The decision it forced is [ADR 0006](docs/adr/0006-lab-gatew
   state first), whether `DELETE /volumes/{id}` trashes or deletes permanently, whether trashed
   volumes show up in `GET /volumes`, and what a no-capacity apply failure leaves in state.
 
+## 27B context: 4 sessions × 262,144 (2026-10-04, *verified* on the running RTX PRO 6000 test node)
+
+Measured earlier the same day, on `node/serving.27b.conf` set to `LLAMA_SLOTS=4`,
+`LLAMA_CTX=1048576` (262,144 tokens/slot, the model's `n_ctx_train`) — a different, larger
+sizing than the 2 × 131,072 the next section below settles on; kept here as the measured
+reference for a bigger-slot config, not as the currently active one. That branch's
+`node/serving.27b.conf` was never merged and set no sampling defaults, so these numbers say
+nothing about the loop investigated below.
+
+- `LLAMA_CTX` is the total across slots: the old 65536 / 4 gave 16,384 tokens per request.
+  The pin pads each slot up to a multiple of 256 (`llama-context.cpp`), so size slots in
+  256s. `/slots` showed `n_ctx` 262,144 × 4 with no rounding warning.
+- VRAM after load: 20,581 MiB at 4 × 16,384; 48,117 MiB at 4 × 126,208; **82,235 MiB at
+  4 × 262,144** (of 97,887). So 64.2 KiB/token (matches the computed 64 KiB) on a ~16.1 GiB
+  base. It does not fit an 80 GB card. VRAM stayed at 82,259 MiB with three slots full at
+  once (262k, 183k, 32k tokens): KV is preallocated, so load does not change it.
+- A 261,920-token prompt returned 200 in 165 s (prefill ~1,590 tok/s cold, decode
+  37 tok/s at that depth); markers at the very start and very end both recalled. A
+  262,500-token prompt returned 400 `exceed_context_size_error` (`n_ctx: 262144`) at once.
+- **Long prefill starves other sessions' decode.** While other slots prefilled ~250k-token
+  prompts, a live client's decode on another slot fell from ~62 to ~0.8 tok/s, and
+  recovered once they stopped. A full 4 × 255k concurrent run was not completed (a live
+  client held a slot; the test was stopped). This effect is about slot *count* sharing one
+  GPU, not specific to this sizing — worth keeping in mind at 2 slots too.
+- Earlier at 4 × 126,208: 124,384 tokens in 53 s (~2,360 tok/s prefill); resending the same
+  prompt hit the prefix cache (123,868 cached tokens) and took 1 s.
+
 ## 27B test tier in VS Code agent mode (2026-10-04, see docs/27b-agent-loop.md)
 
 Task: VS Code's "Ambermist reasoner (27B)" custom model fell into loops in agent mode.
 Measured before and after a server/client config change; partially resolved, reported here.
 
 - **Config drift found before any change *(verified)*:** the live `/opt/ambermist/serving.conf`
-  on the test node did not match the repo's `node/serving.27b.conf` (which still had
+  on the test node did not match `master`'s `node/serving.27b.conf` (which still had
   `LLAMA_CTX=65536 LLAMA_SLOTS=4`, inherited from the flash profile and known wrong — see
-  below). Someone had hand-patched the node directly to `LLAMA_CTX=1048576 LLAMA_SLOTS=4`
-  (4 × 262144, the model's full trained context per slot), bypassing the repo. That edit
-  would have been silently reverted by the next `provision.sh serve`. Whoever did this
-  should commit it (or whatever supersedes it) to `node/serving.27b.conf` instead of editing
-  the node.
+  below). Source traced afterward: branch `27b-weights-volume-and-context` (commit
+  `4f55607`, 09:52 that morning, see the section above) had been provisioned onto the node
+  with `MODEL_PROFILE=27b ops/provision.sh "$IP" serve` but never merged to `master`, so its
+  `LLAMA_CTX=1048576 LLAMA_SLOTS=4` was live while the repo's checked-out `master` still said
+  otherwise. That branch also set no sampling defaults, so the loop in step 1 below was
+  observed under llama.cpp's built-in sampling (temperature 0.8), not the card's values.
 - **`test-tier-27b.md` "What the model needs" was wrong, confirmed *(verified)*:** `LLAMA_CTX`
   is the KV budget summed *across* slots, not per slot; per-slot size is
   `LLAMA_CTX / LLAMA_SLOTS`. 64 KiB/token (already in that doc) × 262,144 tokens total =
