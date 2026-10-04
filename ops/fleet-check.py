@@ -53,6 +53,11 @@ SITE_ORDER = ["FIN-02", "FIN-01", "FIN-03"]
 DEAD = {"discontinued"}  # status the API reports for a reclaimed or zero-balance instance
 INFRA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "infra")
 TFVARS = os.path.join(INFRA, "compute", "terraform.tfvars")
+# --pick-cheapest serves the 27B test tier only and never writes the production tfvars.
+TEST_STORAGE_TFVARS = os.path.join(INFRA, "storage-test", "terraform.tfvars")
+TEST_COMPUTE_TFVARS = os.path.join(INFRA, "compute-test", "terraform.tfvars")
+TEST_IMAGE = "24.04.cuda12.9.docker"
+TEST_VOLUME_GIB = 50  # Verda's NVMe block-volume minimum; 32 was rejected as "too low"
 
 
 def request(method, path, token=None, body=None):
@@ -85,6 +90,94 @@ def get_token():
 def availability(token, spot, sku):
     path = "/instance-availability" + ("?is_spot=true" if spot else "")
     return {row["location_code"]: sku in row.get("availabilities", []) for row in request("GET", path, token) or []}
+
+
+def availability_all(token, spot):
+    """{location_code: set(instance_type)} -- every SKU on offer, not just one."""
+    path = "/instance-availability" + ("?is_spot=true" if spot else "")
+    return {row["location_code"]: set(row.get("availabilities") or [])
+            for row in request("GET", path, token) or []}
+
+
+def fitting_types(token, min_vram_gib):
+    """Single-GPU SKUs with >= min_vram_gib VRAM that support TEST_IMAGE.
+
+    Catalog prices are USD; the Verda console quotes EUR, which is why the two have
+    never matched (see LESSONS.md).
+    """
+    out = {}
+    for r in request("GET", "/instance-types", token) or []:
+        if (r.get("gpu") or {}).get("number_of_gpus") != 1:
+            continue
+        vram = (r.get("gpu_memory") or {}).get("size_in_gigabytes") or 0
+        if vram < min_vram_gib:
+            continue
+        names = [o if isinstance(o, str) else (o.get("name") or o.get("id") or "")
+                 for o in (r.get("supported_os") or [])]
+        if TEST_IMAGE not in names:
+            continue
+        out[r["instance_type"]] = {
+            "model": r.get("model"), "vram": vram, "currency": r.get("currency"),
+            "on_demand": float(r["price_per_hour"]) if r.get("price_per_hour") else None,
+            "spot": float(r["spot_price"]) if r.get("spot_price") else None,
+        }
+    return out
+
+
+def pick_cheapest(token, min_vram_gib, apply_it, prefer=None, kind=None):
+    """Rank every available single-GPU SKU that fits the test model, cheapest first."""
+    types = fitting_types(token, min_vram_gib)
+    if prefer:
+        missing = [p for p in prefer if p not in types]
+        types = {k: v for k, v in types.items() if k in prefer}
+        if missing:
+            print("not in the catalog, or below the VRAM floor: %s" % ", ".join(missing))
+    offers = []
+    for is_spot in (True, False):
+        if kind == "spot" and not is_spot:
+            continue
+        if kind == "on-demand" and is_spot:
+            continue
+        for site, skus in availability_all(token, is_spot).items():
+            for sku in skus & types.keys():
+                price = types[sku]["spot" if is_spot else "on_demand"]
+                if price is not None:
+                    offers.append((price, sku, site, is_spot))
+    offers.sort()
+    if not offers:
+        print("nothing available matching: >= %d GB VRAM, %s%s%s"
+              % (min_vram_gib, TEST_IMAGE,
+                 ", sku in {%s}" % ",".join(prefer) if prefer else "",
+                 ", %s only" % kind if kind else ""))
+        return 2
+    print("--- test-tier SKUs (>= %d GB VRAM, %s), cheapest first ---"
+          % (min_vram_gib, TEST_IMAGE))
+    for price, sku, site, is_spot in offers:
+        t = types[sku]
+        print("  %8.4f %s/h  %-22s%-14s%4dG  %s  %s"
+              % (price, t["currency"], sku, str(t["model"]), t["vram"], site,
+                 "spot" if is_spot else "on-demand"))
+    price, sku, site, is_spot = offers[0]
+    print("cheapest: %s at %s (%s), %s %s/h"
+          % (sku, site, "spot" if is_spot else "on-demand", price, types[sku]["currency"]))
+    if not apply_it:
+        print("  (pass --apply to write the *-test tfvars)")
+        return 0
+    for path, body in (
+        # storage-test takes a single location (one disposable volume, one site);
+        # compute-test reads that location back out of storage-test's remote state.
+        (TEST_STORAGE_TFVARS,
+         'location              = "%s"\nmodel_volume_size_gib = %d\n' % (site, TEST_VOLUME_GIB)),
+        (TEST_COMPUTE_TFVARS,
+         'instance_type = "%s"\nuse_spot      = %s\n' % (sku, str(is_spot).lower())),
+    ):
+        if not os.path.isdir(os.path.dirname(path)):
+            print("  SKIP %s: stack directory does not exist" % path)
+            continue
+        with open(path, "w") as f:
+            f.write(body)
+        print("  wrote %s" % os.path.relpath(path, INFRA + "/.."))
+    return 0
 
 
 def gpus(instance_type, family):
@@ -188,6 +281,18 @@ def main():
     ap.add_argument("--site", choices=SITE_ORDER)
     ap.add_argument("--instance", choices=ALLOWED)
     ap.add_argument("--type", choices=["spot", "on-demand"])
+    ap.add_argument("--pick-cheapest", action="store_true",
+                    help="rank available single-GPU SKUs that fit the 27B test model")
+    ap.add_argument("--min-vram", type=int, default=40, metavar="GIB",
+                    help="VRAM floor for --pick-cheapest (default 40: ~16 GiB weights "
+                         "plus ~16 GiB KV at 4 slots x 65536, plus headroom)")
+    ap.add_argument("--apply", action="store_true",
+                    help="with --pick-cheapest, write the chosen SKU/site to the *-test tfvars")
+    ap.add_argument("--prefer", action="append", metavar="SKU",
+                    help="restrict --pick-cheapest to these SKUs (repeatable), e.g. "
+                         "--prefer 1RTXPRO6000.30V")
+    ap.add_argument("--kind", choices=["spot", "on-demand"],
+                    help="restrict --pick-cheapest to spot or on-demand only")
     args = ap.parse_args()
     sku = args.instance or DEFAULT_SKU
     kind = args.type or "spot"
@@ -277,6 +382,8 @@ def main():
                         f'use_spot      = {"true" if kind == "spot" else "false"}\n')
             fallback = "; fallback" if pick != "FIN-02" and not args.site else ""
             print(f"site: {pick}, {kind} {sku} (written to infra/compute/terraform.tfvars{fallback})")
+    if args.pick_cheapest:
+        rc = pick_cheapest(token, args.min_vram, args.apply, args.prefer, args.kind) or rc
     return rc
 
 

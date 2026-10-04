@@ -3,8 +3,10 @@
 set -euo pipefail
 stage=${1:?usage: bootstrap.sh <packages|tailscale|disks|model|build|t0|serve|nginx>}
 ROOT=/opt/ambermist
-MODEL_SIZE_BYTES=$((140 * 1024 * 1024 * 1024))
-MODEL_DIR=/srv/models/qwen38-uncensored-q4km
+# provision.sh installs the selected profile (MODEL_PROFILE) here as pins/model.conf.
+. "$ROOT/pins/model.conf"
+: "${MODEL_ID:?pins/model.conf did not set MODEL_ID}"
+MODEL_DIR=/srv/models/$MODEL_ID
 
 mkdir -p /srv/build /srv/logs/bootstrap /srv/logs/llama
 
@@ -63,6 +65,7 @@ stage_tailscale() {
 }
 
 stage_disks() {
+  : "${VOLUME_BYTES:?VOLUME_BYTES is unset in pins/model.conf; run lsblk -dbnro NAME,SIZE,TYPE and record the exact byte size of the blank weights disk}"
   mkdir -p /srv/models
   if ! blkid -L amb-model >/dev/null 2>&1; then
     local -a blank=()
@@ -70,10 +73,10 @@ stage_disks() {
     while read -r name size; do
       [[ -z "$(blkid -o value -s TYPE "/dev/$name" 2>/dev/null)" ]] || continue
       [[ "$(lsblk -rno NAME "/dev/$name" | wc -l)" == 1 ]] || continue   # no partitions
-      [[ $size == "$MODEL_SIZE_BYTES" ]] && blank+=("/dev/$name")
+      [[ $size == "$VOLUME_BYTES" ]] && blank+=("/dev/$name")
     done < <(lsblk -dbnro NAME,SIZE,TYPE | awk '$3=="disk"{print $1, $2}')
     if [[ ${#blank[@]} != 1 ]]; then
-      echo "disks: expected exactly one blank $((MODEL_SIZE_BYTES >> 30)) GiB disk, found ${#blank[@]}; not formatting" >&2
+      echo "disks: expected exactly one blank $((VOLUME_BYTES >> 30)) GiB disk, found ${#blank[@]}; not formatting" >&2
       lsblk -o NAME,SIZE,TYPE,FSTYPE,LABEL,MOUNTPOINT >&2
       exit 1
     fi
@@ -98,13 +101,15 @@ stage_t0() {
     python3 -m venv "$venv"
     "$venv/bin/pip" install -q /srv/build/src/llama.cpp/gguf-py
   }
-  . "$ROOT/pins/model.conf"
   "$venv/bin/gguf-dump" --json --json-array --no-tensors "$MODEL_DIR/$ENTRY_FILE" > "$meta"
-  jq -e '.metadata["general.architecture"].value == "qwen4exp"' "$meta" \
-    || { echo "t0: architecture is not qwen4exp" >&2; exit 1; }
-  jq -e '[.metadata["qwen4exp.attention.compress_ratios"].value[]] | all(. == 0 or . == 4)' "$meta" \
-    || { echo "t0: compress_ratios has values other than 0 and 4 (the known bad upload)" >&2; exit 1; }
-  echo "t0: compress_ratios = 4 on $(jq '[.metadata["qwen4exp.attention.compress_ratios"].value[] | select(. == 4)] | length' "$meta") layers (12 expected, unverified)"
+  : "${EXPECT_ARCH:?EXPECT_ARCH is unset in pins/model.conf; read general.architecture from $meta}"
+  jq -e --arg a "$EXPECT_ARCH" '.metadata["general.architecture"].value == $a' "$meta" \
+    || { echo "t0: architecture is not $EXPECT_ARCH" >&2; exit 1; }
+  if [[ $EXPECT_ARCH == qwen4exp ]]; then
+    jq -e '[.metadata["qwen4exp.attention.compress_ratios"].value[]] | all(. == 0 or . == 4)' "$meta" \
+      || { echo "t0: compress_ratios has values other than 0 and 4 (the known bad upload)" >&2; exit 1; }
+    echo "t0: compress_ratios = 4 on $(jq '[.metadata["qwen4exp.attention.compress_ratios"].value[] | select(. == 4)] | length' "$meta") layers (12 expected, unverified)"
+  fi
   . /opt/ambermist/pins/llama.cpp.conf
   local v
   v=$(LD_LIBRARY_PATH=/srv/build/current/lib /srv/build/current/bin/llama-server --version 2>&1)

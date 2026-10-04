@@ -25,7 +25,21 @@ done
 "${SSH[@]}" true || { echo "ssh to $ip never came up" >&2; exit 1; }
 "${SSH[@]}" 'whoami; nft list tables'
 
-tar -C "$root/node" -cz . | "${SSH[@]}" 'mkdir -p /opt/ambermist && tar -C /opt/ambermist -xz && chmod +x /opt/ambermist/bootstrap.sh /opt/ambermist/bin/*.sh'
+# Install one model profile as the active pins/model.conf + serving.conf. Default: flash
+# (the production tier), so the behaviour without MODEL_PROFILE is unchanged.
+profile=${MODEL_PROFILE:-flash}
+for f in "$root/node/pins/model.$profile.conf" "$root/node/serving.$profile.conf"; do
+  [[ -f $f ]] || { echo "unknown MODEL_PROFILE=$profile: no $f" >&2; exit 1; }
+done
+stage=$(mktemp -d)
+trap 'rm -rf "$stage"' EXIT
+cp -a "$root/node/." "$stage/"
+mv "$stage/pins/model.$profile.conf" "$stage/pins/model.conf"
+mv "$stage/serving.$profile.conf" "$stage/serving.conf"
+find "$stage" -maxdepth 2 \( -name 'model.*.conf' -o -name 'serving.*.conf' \) -delete
+echo "provision: profile=$profile model_id=$(. "$stage/pins/model.conf" && echo "$MODEL_ID")"
+
+tar -C "$stage" -cz . | "${SSH[@]}" 'mkdir -p /opt/ambermist && tar -C /opt/ambermist -xz && chmod +x /opt/ambermist/bootstrap.sh /opt/ambermist/bin/*.sh'
 
 # Secrets travel on stdin only (printf is a shell builtin, so nothing appears in argv).
 "${SSH[@]}" 'id llama >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin llama'
@@ -52,5 +66,5 @@ for st in "${stages[@]}"; do
   fi
 done
 dns=$("${SSH[@]}" 'tailscale status --json | jq -r .Self.DNSName')
-echo "provision: done. API on the tailnet: http://${dns%.}:8080/v1 (short: http://ambermist-h200:8080/v1)"
+echo "provision: done. API on the tailnet: http://${dns%.}:8080/v1 (short: http://${dns%%.*}:8080/v1)"
 echo "Tunnel from a host off the tailnet: ssh -i $key -N -L 8080:127.0.0.1:8080 root@$ip"
