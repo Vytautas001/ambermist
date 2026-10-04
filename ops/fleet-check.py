@@ -283,9 +283,9 @@ def main():
     ap.add_argument("--type", choices=["spot", "on-demand"])
     ap.add_argument("--pick-cheapest", action="store_true",
                     help="rank available single-GPU SKUs that fit the 27B test model")
-    ap.add_argument("--min-vram", type=int, default=40, metavar="GIB",
-                    help="VRAM floor for --pick-cheapest (default 40: ~16 GiB weights "
-                         "plus ~16 GiB KV at 4 slots x 65536, plus headroom)")
+    ap.add_argument("--min-vram", type=int, default=96, metavar="GIB",
+                    help="VRAM floor for --pick-cheapest (default 96: 82,235 MiB measured "
+                         "at 4 slots x 262144; 80 GB cards do not fit)")
     ap.add_argument("--apply", action="store_true",
                     help="with --pick-cheapest, write the chosen SKU/site to the *-test tfvars")
     ap.add_argument("--prefer", action="append", metavar="SKU",

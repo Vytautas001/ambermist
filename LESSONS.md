@@ -345,3 +345,23 @@ from that one fact. The decision it forced is [ADR 0006](docs/adr/0006-lab-gatew
   pinned `CUDA_ARCH=90`. *(unverified on a node; H200 should still give `sm90`)*
 - Serving on H100 or RTX PRO 6000 has never been tried. The H200 used 82,761 MiB after load
   (model 79,710 MiB on CUDA0), which doesn't fit an 80 GB H100 with the current `serving.conf`.
+
+## 27B context: 4 sessions × 262,144 (2026-10-04, *verified* on the running RTX PRO 6000 test node)
+
+- `LLAMA_CTX` is the total across slots: the old 65536 / 4 gave 16,384 tokens per request.
+  The pin pads each slot up to a multiple of 256 (`llama-context.cpp`), so size slots in
+  256s. Now `LLAMA_CTX=1048576`, `LLAMA_SLOTS=4`: 262,144 per slot = the model's
+  `n_ctx_train`. `/slots` shows `n_ctx` 262,144 ×4; no rounding warning.
+- VRAM after load: 20,581 MiB at 4 × 16,384; 48,117 MiB at 4 × 126,208; **82,235 MiB at
+  4 × 262,144** (of 97,887). So 64.2 KiB/token (matches the computed 64 KiB) on a ~16.1 GiB
+  base. It does not fit an 80 GB card. VRAM stayed at 82,259 MiB with three slots full at
+  once (262k, 183k, 32k tokens): KV is preallocated, so load does not change it.
+- A 261,920-token prompt returned 200 in 165 s (prefill ~1,590 tok/s cold, decode
+  37 tok/s at that depth); markers at the very start and very end both recalled. A
+  262,500-token prompt returned 400 `exceed_context_size_error` (`n_ctx: 262144`) at once.
+- **Long prefill starves other sessions' decode.** While other slots prefilled ~250k-token
+  prompts, a live client's decode on another slot fell from ~62 to ~0.8 tok/s, and
+  recovered once they stopped. A full 4 × 255k concurrent run was not completed (a live
+  client held a slot; the test was stopped).
+- Earlier at 4 × 126,208: 124,384 tokens in 53 s (~2,360 tok/s prefill); resending the same
+  prompt hit the prefix cache (123,868 cached tokens) and took 1 s.

@@ -18,10 +18,36 @@ attention every 4th layer (`full_attention_interval = 4`) with SSM state layers 
 `key_length`/`value_length` 256, 4 KV heads, `nextn_predict_layers = 1`.
 
 So KV is only paid on the ~16 full-attention layers:
-`2 × 4 heads × 256 × 16 layers × 2 B = 64 KiB/token` → **4 GiB per 65,536-token slot**,
-16 GiB at `LLAMA_SLOTS=4`. With 15.7 GiB of weights, SSM state and graph overhead that is
-roughly **34–36 GiB**, which is why `--min-vram 40` is the floor and a 48 GB card is the
-practical minimum. *Computed, not yet measured — confirm on first serve.*
+`2 × 4 heads × 256 × 16 layers × 2 B = 64 KiB/token`, measured at 64.2 KiB/token on top of
+a ~16.1 GiB base (weights, recurrent state, compute buffers).
+
+## Serving profile: 4 sessions × 262,144 tokens
+
+`node/serving.27b.conf` sets `LLAMA_SLOTS=4` and `LLAMA_CTX=1048576`. `LLAMA_CTX` is the
+**total** across slots, so each request gets `LLAMA_CTX / LLAMA_SLOTS` = **262,144 tokens**.
+That is the model's `n_ctx_train`, the most a request can use without going past what the
+model was trained on.
+
+| | |
+|---|---|
+| Concurrent sessions | 4. A 5th request waits for a free slot. |
+| Tokens per request | 262,144 = prompt (after the chat template) + reasoning + completion. |
+| Over the limit | A prompt of ≥ 262,144 tokens returns 400 `exceed_context_size_error`. If generation reaches the limit, it stops with `finish_reason: "length"`. Always set `max_tokens`. |
+| VRAM | **82,235 MiB** of 97,887 on the RTX PRO 6000 after load (measured 2026-10-04). |
+| Card | Needs 96 GB: it does **not** fit an 80 GB H100/A100. `fleet-check.py --min-vram` defaults to 96. |
+| Speed (measured) | A 261,920-token prompt: 165 s to read (~1,590 tok/s), then 37 tok/s output. Repeating a prompt hits the prefix cache (124k cached tokens: 1 s). All slots share one GPU: while another slot reads a long prompt, output on the other slots drops from ~62 to under 1 tok/s. |
+
+Earlier sizes on the same card, for comparison: 4 × 16,384 used 20,581 MiB; 4 × 126,208
+used 48,117 MiB.
+
+To change it, keep `LLAMA_CTX = LLAMA_SLOTS × per-request tokens` with the per-request
+figure a multiple of 256: the pinned llama.cpp pads each slot up to a multiple of 256 and
+warns about "rounding" otherwise. Going past 262,144 per slot is untrained. Estimated
+from the measured slope (not run): 8 sessions fit at ~147,456 each (~89 GiB), or 131,072
+each (~81 GiB). Edit `serving.27b.conf` only — never the flash profile — then
+`MODEL_PROFILE=27b ops/provision.sh "$IP" serve` restarts `llama-server` (~5 s with a warm
+page cache; in-flight requests are dropped). Check the result with `/slots` (`n_ctx` per
+slot) and `nvidia-smi`.
 
 The pinned llama.cpp (`LLAMA_SHA=e9f824d8`) already supports `qwen35`, verified in
 `src/llama-arch.cpp` and `src/llama-model.cpp`, so **no new pin and no extra rebuild**.
@@ -155,8 +181,9 @@ Check what actually fits before trusting the slot count:
 ssh -i "$SSH_KEY" root@"$IP" 'nvidia-smi --query-gpu=memory.used,memory.total --format=csv'
 ```
 
-If it will not fit, lower `LLAMA_SLOTS` in `node/serving.27b.conf` only — never in the
-flash profile.
+Expect about 82,235 MiB used. On a card under 96 GB it will not load; lower
+`LLAMA_CTX` (and/or `LLAMA_SLOTS`) in `node/serving.27b.conf` only, as described under
+"Serving profile" above — never in the flash profile.
 
 ## 8. Acceptance
 
