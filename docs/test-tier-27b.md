@@ -18,10 +18,15 @@ attention every 4th layer (`full_attention_interval = 4`) with SSM state layers 
 `key_length`/`value_length` 256, 4 KV heads, `nextn_predict_layers = 1`.
 
 So KV is only paid on the ~16 full-attention layers:
-`2 × 4 heads × 256 × 16 layers × 2 B = 64 KiB/token` → **4 GiB per 65,536-token slot**,
-16 GiB at `LLAMA_SLOTS=4`. With 15.7 GiB of weights, SSM state and graph overhead that is
-roughly **34–36 GiB**, which is why `--min-vram 40` is the floor and a 48 GB card is the
-practical minimum. *Computed, not yet measured — confirm on first serve.*
+`2 × 4 heads × 256 × 16 layers × 2 B = 64 KiB/token`. **This is KV per token in total, not
+per slot** — the per-slot size is `LLAMA_CTX / LLAMA_SLOTS`, and `LLAMA_CTX` is the budget
+summed across all slots. 16 GiB of KV buys **262,144 tokens in total**, however it's split:
+4 slots of 65,536 and 2 slots of 131,072 both cost the same ~16 GiB. With 15.7 GiB of
+weights, SSM state and graph overhead that is roughly **34–36 GiB**, which is why
+`--min-vram 40` is the floor and a 48 GB card is the practical minimum.
+*Confirmed 2026-10-04 on the 96 GB RTX PRO 6000: `LLAMA_CTX=262144`, `LLAMA_SLOTS=2` (2 ×
+131,072/slot) measured 32,655 MiB (~31.9 GiB) total VRAM used after load — in the estimated
+range.*
 
 The pinned llama.cpp (`LLAMA_SHA=e9f824d8`) already supports `qwen35`, verified in
 `src/llama-arch.cpp` and `src/llama-model.cpp`, so **no new pin and no extra rebuild**.
@@ -155,8 +160,21 @@ Check what actually fits before trusting the slot count:
 ssh -i "$SSH_KEY" root@"$IP" 'nvidia-smi --query-gpu=memory.used,memory.total --format=csv'
 ```
 
-If it will not fit, lower `LLAMA_SLOTS` in `node/serving.27b.conf` only — never in the
-flash profile.
+If it will not fit, lower `LLAMA_CTX` and/or `LLAMA_SLOTS` in `node/serving.27b.conf` only —
+never in the flash profile. What matters for whether a request fits is the **per-slot**
+size, `LLAMA_CTX / LLAMA_SLOTS`, not `LLAMA_CTX` alone; lowering `LLAMA_SLOTS` without also
+lowering `LLAMA_CTX` makes each slot *larger*, not smaller.
+
+## VS Code client
+
+VS Code's `chatLanguageModels.json` sets its own `maxInputTokens`/`maxOutputTokens` for the
+`ambermist` entry and does not read them from the server. Those two must sum to less than
+the per-slot size (`LLAMA_CTX / LLAMA_SLOTS`) above, with room left for template overhead —
+reasoning counts as output. As of 2026-10-04, with a 131,072-token slot, the entry is set to
+`maxInputTokens: 110000`, `maxOutputTokens: 16000` (see docs/27b-agent-loop.md step 4). Also
+note: VS Code's agent mode has been observed sending its own `temperature` (0.1, overriding
+the server's sampling default) on at least some requests; the client config has no field to
+change this, so it isn't adjustable from this repo.
 
 ## 8. Acceptance
 

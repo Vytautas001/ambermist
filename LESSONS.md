@@ -332,6 +332,93 @@ from that one fact. The decision it forced is [ADR 0006](docs/adr/0006-lab-gatew
   state first), whether `DELETE /volumes/{id}` trashes or deletes permanently, whether trashed
   volumes show up in `GET /volumes`, and what a no-capacity apply failure leaves in state.
 
+## 27B test tier in VS Code agent mode (2026-10-04, see docs/27b-agent-loop.md)
+
+Task: VS Code's "Ambermist reasoner (27B)" custom model fell into loops in agent mode.
+Measured before and after a server/client config change; partially resolved, reported here.
+
+- **Config drift found before any change *(verified)*:** the live `/opt/ambermist/serving.conf`
+  on the test node did not match the repo's `node/serving.27b.conf` (which still had
+  `LLAMA_CTX=65536 LLAMA_SLOTS=4`, inherited from the flash profile and known wrong — see
+  below). Someone had hand-patched the node directly to `LLAMA_CTX=1048576 LLAMA_SLOTS=4`
+  (4 × 262144, the model's full trained context per slot), bypassing the repo. That edit
+  would have been silently reverted by the next `provision.sh serve`. Whoever did this
+  should commit it (or whatever supersedes it) to `node/serving.27b.conf` instead of editing
+  the node.
+- **`test-tier-27b.md` "What the model needs" was wrong, confirmed *(verified)*:** `LLAMA_CTX`
+  is the KV budget summed *across* slots, not per slot; per-slot size is
+  `LLAMA_CTX / LLAMA_SLOTS`. 64 KiB/token (already in that doc) × 262,144 tokens total =
+  16 GiB of KV, however split across slots. Fixed in the doc.
+- **GGUF `context_length` *(verified)*:** 262144 (`qwen35.context_length`), confirmed on the
+  node — meets the >=131072 floor the task required before touching server config.
+- **Step 1, loop shape before any change *(verified, from the server log and one screenshot
+  the operator sent)*:** two distinct symptoms, both present in the same session:
+  1. Repeated short turns (~150–650 generated tokens each) with the prompt growing by
+     ~250–700 tokens per turn and old context checkpoints being evicted every turn —
+     consistent with the same tool being re-called turn after turn.
+  2. One single assistant turn visibly stuck: the model announced it was "stuck in a loop"
+     and then repeated the same source-code comment block verbatim many times in a row
+     before the operator cancelled it.
+  No `exceed_context_size` errors and no `truncated = 1` stops appeared in the log at any
+  point in this session — **the loop was not caused by hitting the context limit.** The
+  server at the time was running with `--ctx-size 1048576 --parallel 4` (see the drift note
+  above), i.e. 262,144 tokens per slot already, far more than any prompt reached (max
+  observed ~45,700 tokens). This rules out the task doc's primary hypothesis (16,384-token
+  slots from a stale repo file) for *this* run; that hypothesis may still be correct for
+  whatever config was running on whatever earlier occasion the operator first noticed the
+  loop, which we didn't capture.
+- **Whether VS Code sets its own sampling, which overrides the server *(verified)*:** yes.
+  `/slots` repeatedly showed a busy slot with `temperature: 0.1`, differing from whatever the
+  server's own configured default was at the time (1.0 after step 2). `top_k: 20` matched in
+  both cases so that alone doesn't prove an override, but `presence_penalty` tracked the
+  server's configured value across all three deploys (0.0 → 1.0 → 1.5) while `temperature`
+  stayed pinned at 0.1 throughout — so VS Code sends its own `temperature` but **not** its own
+  `presence_penalty`, letting the server default take effect for that one field. Per the task
+  doc's stop condition, nothing was built to override this.
+- **The client config has no sampling field at all:** `chatLanguageModels.json`'s `ambermist`
+  entry only has `maxInputTokens`/`maxOutputTokens` (plus url/vendor/id/toolCalling/vision) —
+  no `temperature`. The `temperature: 0.1` VS Code sends is hardcoded in its own agent-mode
+  request logic, not something this repo or the operator can configure.
+- **Whether VS Code sends `reasoning_content` back:** *unverified* — the optional `-lv 5`
+  check in step 1 was skipped (would have needed another redeploy and risked logging the
+  operator's live chat; the task doc allows recording "unknown" and moving on).
+- **Step 2/3, server change *(verified, deployed and measured)*:** `node/serving.27b.conf` now
+  sets `LLAMA_CTX=262144 LLAMA_SLOTS=2` (131,072 tokens/slot) and
+  `LLAMA_EXTRA_ARGS="--temp 1.0 --top-k 20 --top-p 0.95 --min-p 0 --presence-penalty <N>"`
+  (card's thinking-mode values except `presence_penalty`, escalated — see below). Deployed
+  with `MODEL_PROFILE=27b ops/provision.sh "$IP" serve`; confirmed on the running process
+  args and via `/slots` (`n_ctx: 131072` × 2). VRAM used after load: **32,655 / 97,887 MiB**.
+  T1 passed 5/5 (both tool-call modes) after every one of the three deploys below. A synthetic
+  ~57,664-token prompt (filler text + a short question, `max_tokens: 2048`) got **200**, not
+  400, confirming large-but-in-budget prompts no longer error.
+- **Step 5, `presence_penalty` escalation *(verified, three real VS Code sessions)*:**
+  - `0.0` (card default): not retested in isolation after the slot-size fix — went straight to
+    `1.0` once the operator's first post-fix retest ended with an unattended 45,723-token
+    prompt the operator cancelled themselves (not a server-side failure; see above).
+  - `1.0`: still looped. A single turn generated **16,861 tokens continuously over 283 s**
+    before stopping on its own (`truncated = 0`, no error, no cancel) — a finite but
+    excessive single-turn runaway, not the earlier "same block repeated" text (not rechecked
+    verbatim, but the token count and duration are consistent with the same failure mode).
+  - `1.5` (the task doc's ceiling — do not go higher, card warns of language mixing above
+    this): the runaway shortened but didn't disappear — **12,399 tokens over 211 s** in one
+    turn, then the session recovered and continued normally (6 more turns, all under 2 s,
+    all finishing cleanly). The operator confirmed VS Code showed a real, usable response and
+    a generated code file at the end — not stuck/garbled text — but said the agent "acted
+    very uncertain." This doesn't match the task doc's "still looping at 1.5" stop condition
+    (which describes an unresolved loop, not a slow-but-working turn), so `presence_penalty`
+    was **left at 1.5** rather than reverted to 0.
+  - Net effect: `presence_penalty` 0.0 → 1.5 reduced the longest single-turn runaway from
+    16,861 to 12,399 generated tokens (~26% shorter) but did not eliminate it. One long,
+    slow, hedging-sounding turn is a known residual behavior, not a crash or a true infinite
+    loop.
+- **Final state, done-when check:** `node/serving.27b.conf` — 2 × 131,072 slots, card sampling
+  with `presence_penalty=1.5`; flash profile untouched. `/slots` and T1 both confirm.
+  `chatLanguageModels.json`'s `ambermist`/`reasoner` entry — `maxInputTokens: 110000`,
+  `maxOutputTokens: 16000` (sum 126,000 < 131,072 slot). Operator's retest: **no longer an
+  unbounded loop; one long single-turn generation remains, then normal operation resumes.**
+  Not fully resolved — flagged for a design session per the task doc's scope (no proxy,
+  no chat-template override, no `--reasoning-budget`/thinking-off was attempted, as directed).
+
 ## Allowed SKUs in the catalog (2026-10-03, *verified* via `GET /instance-types`, `/images`)
 
 - SKUs within the fleet cap: `1H200.141S.44V` (170 GB RAM, 4.827 / spot 2.414 per hour),
