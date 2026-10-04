@@ -294,3 +294,54 @@ from that one fact. The decision it forced is [ADR 0006](docs/adr/0006-lab-gatew
 - **Not verified:** the gateway's leg to the H200. The node was not joined to the tailnet
   on 2026-10-01, so `/health` through the gateway returns 502 and no inference has gone
   through this path.
+
+## FIN-03 fallback model volume (2026-10-03)
+
+- **Checked 1 — verified from the read-only plan:** importing a volume with the provider's
+  omitted `location` and `on_spot_discontinue` attributes requires ignoring both ForceNew
+  attributes. `ignore_changes = [location, on_spot_discontinue]` plans one import with no
+  add/change/destroy operations.
+- **Checked 2 — verified by running it:** moving the existing FIN-02 volume to
+  `verda_volume.model["FIN-02"]` planned and applied with 0 add, 0 change, 0 destroy. The
+  state output is now the site-keyed `model_volume_ids` map, retaining the existing volume ID.
+- **Picker — verified with focused mocked API scenarios:** a running `ambermist-h200` is left
+  unchanged; only detached volumes named exactly `ambermist-model` are candidates; FIN-02 is
+  preferred and a detached FIN-03 volume is selected as the fallback; no candidate or no spot
+  candidate exits 2.
+- **Clone — verified:** the request started at 2026-10-03 11:41:14 UTC. The API returned the
+  destination ID in a one-element JSON list, and the Verda console showed it cloning. The
+  destination `f64e68e9-e379-442b-ac20-10def731f87d` was later observed by the read-only fleet
+  check by 11:49:03 UTC as `detached`, 140 GiB, FIN-03. The duplicate `ambermist-model` name was
+  accepted. The exact completion time and any billing-page charge were not checked.
+- The volume API documentation has no `on_spot_discontinue` field; whether a cloned or existing
+  volume is protected from spot reclaim is unverified.
+- No FIN-03 node launch was performed; the operator did not approve GPU time for step 7.
+
+## Stale compute state after a reclaim (2026-10-03, *verified* unless marked)
+
+- Compute state from 2026-09-30 still held `verda_instance.node` `5379c0d0…` (spot, FIN-02).
+  The API reports it as `discontinued`. `GET /instances` leaves discontinued instances out
+  (`?status=discontinued` lists them, including six older `ambermist-h200`), but
+  `GET /instances/{id}` still returns the record.
+- The provider's refresh keeps it in state: `plan` showed only `verda_volume_attachment.model`
+  to create, attaching to the dead instance ID. After `tofu state rm verda_instance.node` (run on
+  a copy), `plan` showed 2 to add (instance, attachment). The SSH key and boot script still existed.
+- `tofu state rm` on the local backend writes `terraform.tfstate.<unix time>.backup`.
+- `ops/session.sh up`/`down` were tested only against a mock API. *(unverified on real resources)*
+  Also unverified: what `destroy` does to a discontinued instance (the script removes it from
+  state first), whether `DELETE /volumes/{id}` trashes or deletes permanently, whether trashed
+  volumes show up in `GET /volumes`, and what a no-capacity apply failure leaves in state.
+
+## Allowed SKUs in the catalog (2026-10-03, *verified* via `GET /instance-types`, `/images`)
+
+- SKUs within the fleet cap: `1H200.141S.44V` (170 GB RAM, 4.827 / spot 2.414 per hour),
+  `1H100.80S.30V` (120 GB RAM) and `1H100.80S.32V` (170 GB RAM, both 3.700 / 1.850),
+  `1RTXPRO6000.30V` (90 GB RAM, 2.044 / 1.022), `2RTXPRO6000.60V` (180 GB RAM, 4.088 / 2.044).
+  Currency not labelled. `1RTXPRO6000.30V.CC` is a confidential-computing variant (left out).
+- `24.04.cuda12.9.docker` is offered for H100 and RTX PRO 6000 as well.
+- Spot snapshot at 14:00 UTC: `1H100.80S.30V` at FIN-02; RTX PRO 6000 only as 4× and 8× (over
+  the cap) at FIN-01 and FIN-03. Availability changes by the minute.
+- `build-llama.sh` now reads the arch from `nvidia-smi --query-gpu=compute_cap` instead of the
+  pinned `CUDA_ARCH=90`. *(unverified on a node; H200 should still give `sm90`)*
+- Serving on H100 or RTX PRO 6000 has never been tried. The H200 used 82,761 MiB after load
+  (model 79,710 MiB on CUDA0), which doesn't fit an 80 GB H100 with the current `serving.conf`.

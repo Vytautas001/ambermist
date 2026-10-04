@@ -316,6 +316,27 @@ destroy the compute stack afterwards.
    `4096`. Start by asking it to list available CALDERA agents and summarize their
    capabilities. Then try a short planning request for your lab.
 
+   **LiteLLM breaks the MCP stdio framing on the first completion call.** Starting an
+   Author or Plan and Execute session can fail with repeated
+   `ValidationError: ... Invalid JSON ... type=json_invalid` in the CALDERA log, quoting
+   fragments like `19:20:18 - LiteLLM:INFO: utils.py:4382 -` or
+   `LiteLLM completion() model=... provider = custom_openai`. This is unrelated to
+   authentication or the gateway — the model call is actually going through. The MCP
+   stdio transport requires the tool-server subprocess's stdout to carry nothing but
+   JSON-RPC frames, but litellm's logger defaults to `LITELLM_LOG=DEBUG` and routes
+   everything below `WARNING` to stdout by design
+   (`litellm/_logging.py`'s `LevelRoutingStreamHandler`). `author.py`/`plan_execute.py`
+   spawn `mcp_server.py` as a fresh interpreter (`StdioServerParameters(command=
+   sys.executable, args=[mcp_server.py], ...)`), which never runs `hook.py`'s
+   `logging.getLogger("LiteLLM").setLevel(logging.WARNING)` suppression — that only
+   covers the parent process — so the subprocess logs at `DEBUG` straight onto the
+   pipe the parent is reading as JSON-RPC.
+
+   Fix: add `LITELLM_LOG=ERROR` to `plugins/mcp/.env`. `get_env()` in both workflow
+   files builds the subprocess environment from `os.environ.copy()`, so this one line
+   propagates to every spawned `mcp_server.py` and DSPy worker, not just the parent.
+   Restart CALDERA afterwards so `hook.py`'s `load_dotenv()` picks it up.
+
 9. **Tear down.**
 
    Run `tofu -chdir=infra/compute destroy` when you are done for the session. The model

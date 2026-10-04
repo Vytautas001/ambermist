@@ -4,8 +4,7 @@ data "terraform_remote_state" "storage" {
 }
 
 locals {
-  model_volume_id = data.terraform_remote_state.storage.outputs.model_volume_id
-  location        = data.terraform_remote_state.storage.outputs.location
+  model_volume_id = data.terraform_remote_state.storage.outputs.model_volume_ids[var.location]
   boot            = templatefile("${path.module}/boot.sh.tftpl", { admin_cidrs = var.admin_cidrs })
 }
 
@@ -33,7 +32,7 @@ resource "verda_instance" "node" {
   image             = var.image
   hostname          = "${var.project}-h200"
   description       = "project=${var.project};stack=inference;owner=${var.owner};managed-by=opentofu"
-  location          = local.location
+  location          = var.location
   is_spot           = var.use_spot
   ssh_key_ids       = [verda_ssh_key.op.id]
   startup_script_id = verda_startup_script.boot.id

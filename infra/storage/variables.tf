@@ -1,8 +1,8 @@
-variable "location" {
-  type = string
+variable "locations" {
+  type = set(string)
   validation {
-    condition     = contains(["FIN-01", "FIN-02", "FIN-03"], var.location)
-    error_message = "location must be FIN-01, FIN-02 or FIN-03."
+    condition     = length(var.locations) > 0 && alltrue([for l in var.locations : contains(["FIN-01", "FIN-02", "FIN-03"], l)])
+    error_message = "locations must list FIN-01, FIN-02 or FIN-03."
   }
 }
 
