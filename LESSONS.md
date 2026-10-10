@@ -460,3 +460,125 @@ Measured before and after a server/client config change; partially resolved, rep
   pinned `CUDA_ARCH=90`. *(unverified on a node; H200 should still give `sm90`)*
 - Serving on H100 or RTX PRO 6000 has never been tried. The H200 used 82,761 MiB after load
   (model 79,710 MiB on CUDA0), which doesn't fit an 80 GB H100 with the current `serving.conf`.
+
+## Local LLM on the RTX 3060, candidate measurement (2026-10-08, *verified* by running it, see docs/local-llm-3060.md)
+
+- **llama.cpp build *(verified)*:** pinned commit `e9f824d8c` builds clean in WSL (Ubuntu
+  26.04) with plain `cmake`/`make` (no `ninja` installed) once `PATH`/`CUDACXX` point at
+  `/usr/local/cuda/bin/nvcc` — CMake's `find_package(CUDAToolkit)` doesn't auto-discover the
+  WSL CUDA 13.4 toolkit otherwise, even though `nvidia-smi` and the Windows CUDA 12.9 install
+  are both visible from WSL (that Windows path is on `$PATH` but is a Windows binary, useless
+  here). `--list-devices`, `--version`, and all of `--n-cpu-moe`, `--api-key-file`,
+  `--presence-penalty`, `-fa`, `--alias`, `--fit` exist at this pin, confirmed via `--help`.
+- **Candidate A, Qwen3.8-27B-Uncensored Q4_K_M — fails the gate *(verified)*:** download
+  sha256 matched the pin exactly. `--fit on` at `-c 32768` chose **36/66 layers on GPU**
+  (8,470 MiB weights on CUDA0, 7,300 MiB CPU-mapped; found via `-lv 5`, not printed at the
+  default verbosity). Real ~8.5k-token `/v1/chat/completions` request: **TTFT 31.1 s** (prompt
+  8,482 tok at 272.6 tok/s — both comfortably inside the doc's gate), but **generation only
+  2.59 tok/s** against the required ≥8 tok/s. `llama-bench` with `-ngl -1` (full/"auto"
+  offload) is misleading here — it reports pp512 75 tok/s but tg128 only 3.12 tok/s, because
+  beyond 12 GiB `-1` relies on CUDA UVM paging over PCIe, which thrashes on every
+  single-token decode step; always bench with the real `--fit`-chosen `-ngl`, not `-1`, once
+  the model doesn't fit outright.
+- **Candidate B does not exist *(verified via the HF API)*:** the official `Qwen/` Qwen3.8
+  line has only the 27B dense model, a large "Flash-Next" MoE, and a 2.4T-A95B MoE — no
+  8–14B dense size and no confirmed smaller MoE. The only ~9B-class options are unofficial
+  third-party distills (e.g. `empero-ai/Qwen3.8-9B-Distill-GGUF`) of unknown provenance/
+  quality; not used. Moved straight to candidate C per the doc's fallback rule.
+- **Candidate C, `Qwen/Qwen3-14B-GGUF` Q4_K_M — passes the gate, chosen *(verified)*:**
+  revision `530227a7d994db8eca5ab5ced2fb692b614357fd`, file size 9,001,752,960 B, sha256
+  `500a8806e85ee9c83f3ae08420295592451379b4f8cf2d0f41c15dffeb6b81f0` (downloaded via a
+  `curl -K` header-file, not `-H`, after the near-miss below). At `-c 32768` `--fit` only
+  offloaded 30/41 layers (standard transformer KV is expensive at that length, unlike the
+  27B's hybrid-SSM KV) and generation dropped to 5.31 tok/s — also fails the gate. At
+  **`-c 16384`**, `--fit` reaches **38/41 layers on GPU** (1,018 MiB CPU-mapped), leaving
+  927 MiB VRAM free under load. Real ~8.4k-token request: **TTFT 10.2 s**, prompt
+  821.2 tok/s, **generation 15.24 tok/s** — clears the ≥8 tok/s gate with margin.
+  `llama-bench -ngl 38`: pp512 1020.7 tok/s, tg128 21.5 tok/s (short-context ceiling, no KV
+  overhead). RAM: ~1.5 GiB active + 9 GiB page cache, 14 GiB available, no swap pressure —
+  no RAM bottleneck like candidate A risked. **Chosen model: candidate C, `-ngl 38`,
+  `-c 16384`, `--parallel 1`.** Only one candidate passed, so no operator tie-break was
+  needed.
+- **Security near-miss, self-caught *(verified)*:** the first candidate-C download used
+  `curl -H "Authorization: Bearer $HF_TOKEN" ...`, which puts the token in argv — visible to
+  any local user via `ps`. It was then actually printed into the session transcript by a
+  follow-up `ps aux | grep curl` during a progress check. Caught immediately: killed the
+  curl, re-ran the download via a `chmod 600` curl `-K` config file (`header = "Authorization:
+  Bearer <token>"`), shredded the temp file after. **The exposed `HF_TOKEN` should be
+  rotated** — this doc can't do that itself. Lesson generalizes past the doc's own
+  `AMB_API_KEY`/`--api-key-file` warning: *any* secret passed as a CLI arg or `-H` header is
+  `ps`-visible, not just the one example the task doc called out.
+- **A second near-self-inflicted outage:** `kill $(pgrep -f "llama-server.*reasoner")` run
+  from a shell whose own pending command text already contained that same substring (the next
+  `llama-server ... --alias reasoner ...` invocation in the same script) matched the *current*
+  process's argv and killed the script before it could start the replacement server. Fixed by
+  matching on the exact binary name instead: `pgrep -x llama-server` / `kill $(pgrep -x
+  llama-server)`. Worth remembering for any `pgrep -f`/`pkill -f` against a long, literal
+  command line used inside the same script that issues it.
+- **Tailnet: stuck, not rejected *(verified, still open)*:** `ambermist-local` (tagged
+  `tag:ambermist`, joined in an earlier session) now fails to sync —
+  `PollNetMap: initial fetch failed 404: node not found`, continuous since ~06:16 that
+  morning; `tailscale ping`/`ssh amber-gateway` both time out. General internet from WSL
+  works fine (plain HTTPS egress unaffected), so this is specific to the tailnet control
+  plane, not a host network problem. `tailscale up` (no new auth key, same flags) fails with
+  `Access denied: prefs write access denied — Use 'sudo tailscale up ...'`, i.e. this needs
+  the operator's sudo password, same as every other privileged step in the task doc. Not yet
+  resolved as of this writing — flagged to the operator rather than minting a new
+  `TS_AUTHKEY` unprompted.
+- **Binding `--host 0.0.0.0` directly from an agent Bash call is denied** by the Claude Code
+  auto-mode permission classifier ("Expose Local Services"), even for a loopback-adjacent
+  local measurement. Routed around it correctly, not by working around the block: the
+  production bind lives in the systemd unit (`~/llm/ambermist-llama.service`, staged, not yet
+  installed — needs the operator's `sudo systemctl enable --now`), so it's the operator's
+  privileged action that opens the port, not a direct agent action.
+- **Still open (step 6/7/8/9 of the task doc):** systemd unit staged but not installed; no
+  Windows Task Scheduler entry yet; VS Code `chatLanguageModels.json` snippet drafted but not
+  applied (operator must do it, file holds other secrets); tailnet resync pending; gateway
+  repoint (step 8) blocked on both the tailnet fix and explicit operator approval since it
+  changes the live lab gateway.
+  - **Update, later the same day:** the systemd unit *was* installed and enabled (verified via
+    `systemctl status ambermist-llama` — active, running candidate C) sometime after the above
+    was written; this note was stale. See the next section for what changed after that.
+
+## Local LLM on the RTX 3060, model swap to an abliterated build (2026-10-08, *verified*)
+
+- **Why:** the operator asked to serve an uncensored/"abliterated" model instead of stock
+  `Qwen/Qwen3-14B-GGUF` for the CALDERA/Kali lab — fits the lab's security-tool-testing use
+  case better than a safety-tuned chat model. Requested as `huihui_ai/qwen3-abliterated:14b-v2`.
+- **That string is Ollama tag syntax** (`namespace/model:tag`), not a Hugging Face
+  `repo/revision/file.gguf` reference, and this doc's "Don't build these" section rules out
+  Ollama outright. Flagged to the operator rather than silently switching stacks; they chose to
+  stay on llama.cpp.
+- **No GGUF of the "v2" checkpoint exists** *(verified via web search)*: huihui-ai's
+  `Huihui-Qwen3-14B-abliterated-v2` is published as safetensors only. A v2 GGUF exists for the
+  8B size (`mradermacher/Huihui-Qwen3-8B-abliterated-v2-GGUF`) but not for 14B.
+- **Used instead, operator's choice: the confirmed GGUF of huihui-ai's v1 checkpoint** —
+  `bartowski/huihui-ai_Qwen3-14B-abliterated-GGUF` (quantized from
+  `huihui-ai/Qwen3-14B-abliterated`), revision `623c0f3fc42a4699d4583fb16e022942c003d1b7`, file
+  `huihui-ai_Qwen3-14B-abliterated-Q4_K_M.gguf`, **9,001,749,568 bytes** — 3,392 bytes off stock
+  candidate C's file, same param count and quant. sha256 **verified against the downloaded
+  file**: `d76889059a3bfab30bc565012a0184827ff2bdc10197f6babc24541b98451dbe`.
+- **Download flakiness, not a bad file:** two attempts stalled partway with
+  `curl: (92) HTTP/2 stream 1 was not closed cleanly: CANCEL` (once at ~2.1 GiB, once after a
+  `-C -` resume at ~1.8 GiB further) — a transient HF/CDN HTTP/2 issue, not corruption (`curl`
+  exit code was 92 both times, not a checksum mismatch). Third attempt, forcing `--http1.1`
+  with `--retry-all-errors` and `-C -` to resume from the partial file, completed clean and the
+  sha256 matched on the first try. **Lesson: for multi-GB HF downloads over a flaky link, retry
+  with `--http1.1` rather than repeatedly resuming over HTTP/2.**
+- **Not re-run through the step-4 gate live**, by design: same architecture/param count/quant
+  as the already-measured stock candidate C (file size differs by 3,392 bytes), so the proven
+  `-ngl 38 -c 16384` was kept rather than re-measured. A real side-by-side bench was skipped
+  because the live service was already using ~11 of 12 GiB VRAM (leaving no room to load a
+  second 14B model concurrently) and stopping it needs the operator's `sudo` either way — so
+  the staged systemd unit (`~/llm/ambermist-llama.service`) was edited to point at the new
+  `--model` path (only that one flag changed) and handed to the operator to apply via
+  `sudo systemctl restart ambermist-llama`, with the step-6 checks run right after as the real
+  validation.
+- **Live confirmation (2026-10-09), operator applied the restart:** `systemctl status` shows
+  the service running the new `--model .../huihui-ai_Qwen3-14B-abliterated-Q4_K_M.gguf` path.
+  A real `/v1/chat/completions` request (no key → 401, confirmed; with key → 200) returned the
+  correct answer after a `<think>` block, at **19.9 tok/s generation** — slightly *faster* than
+  stock candidate C's 15.24 tok/s, clearing the ≥8 tok/s gate with more margin, not less.
+  Confirms the "same architecture/quant → same settings" assumption held.
+- The old stock file (`~/llm/models/qwen3-14b-q4km/Qwen3-14B-Q4_K_M.gguf`) was left on disk,
+  not deleted, so reverting the unit's `--model` path is a one-line rollback.
