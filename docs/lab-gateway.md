@@ -15,6 +15,30 @@ joins has to disable its anti-spoofing rule. A gateway means one machine does, n
 
 Current gateway: **kali-caldera** at `100.66.6.130`, tagged `tag:ambermist-consumer`.
 
+## TEMPORARY: upstream is the local LLM, not the H200
+
+Since 2026-10-10 the gateway proxies to **`ambermist-local.tail57998f.ts.net`** (the
+RTX 3060 PC, [local-llm-architecture.md](local-llm-architecture.md)) instead of
+`ambermist-h200.tail57998f.ts.net`. This is a test setup. To go back to the H200:
+
+```bash
+scp ops/lab/gateway.sh amber@100.66.6.130:/tmp/gateway.sh
+ssh amber@100.66.6.130 'sudo bash /tmp/gateway.sh nginx verify'   # no H200= override: script default is the H200
+```
+
+How it was done: `sudo H200=ambermist-local.tail57998f.ts.net bash /tmp/gateway.sh nginx verify`.
+Nothing in the repo default changed, so any rerun of `gateway.sh` **without** `H200=` silently
+reverts to the H200 name, which does not resolve while the H200 is destroyed (502,
+`could not be resolved`). Check which upstream is live with:
+
+```bash
+ssh amber@100.66.6.130 "grep -n 'set \$h200' /etc/nginx/sites-available/ambermist-gateway"
+```
+
+The pre-change site file is kept on the gateway at
+`/etc/nginx/sites-available/ambermist-gateway.h200.bak`. Right after an nginx reload,
+`/health` can return one stale 502 from a draining worker; retry once.
+
 ## Setting it up
 
 [`ops/lab/gateway.sh`](../ops/lab/gateway.sh) does the whole configuration and is safe to

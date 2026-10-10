@@ -10,6 +10,9 @@ LAB_IP=${LAB_IP:-100.66.6.130}
 LAB_CIDR=${LAB_CIDR:-100.66.6.0/24}
 LAB_DNS=${LAB_DNS:-100.100.100.26 100.100.100.28}
 LAB_DOMAIN=${LAB_DOMAIN:-ambermist.lt}
+# NOTE (2026-10-10): the live gateway is TEMPORARILY pointed at ambermist-local via
+# `H200=ambermist-local.tail57998f.ts.net`; this default is still the H200. To revert, rerun
+# the nginx stage without the override. See docs/lab-gateway.md ("TEMPORARY").
 H200=${H200:-ambermist-h200.tail57998f.ts.net}
 PORT=${PORT:-8080}
 

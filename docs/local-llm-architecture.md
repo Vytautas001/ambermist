@@ -14,7 +14,7 @@ A llama.cpp server on the operator's Windows PC (WSL/Ubuntu), standing in for th
 Lab client / VS Code
        │  POST /v1/chat/completions, model="reasoner", Bearer AMB_API_KEY
        ▼
-lab gateway (100.66.6.130, nginx)  ──(not currently repointed here — see Status)
+lab gateway (100.66.6.130, nginx)  ──(repointed here TEMPORARILY since 2026-10-10 — see Status)
        │  or, VS Code / local clients hit this PC directly:
        ▼
 WSL (Ubuntu, this PC) :8080
@@ -56,12 +56,12 @@ huihui-ai Qwen3-14B-abliterated, Q4_K_M GGUF
 
 - ✅ Service running locally, serving the correct model, key-gated (`curl 127.0.0.1:8080` with
   no key → 401; with key → 200, correct output).
-- ❌ **Tailnet is down**: `ambermist-local` shows `offline` in `tailscale status`, coordination
-  server unreachable. So this PC is **not** currently reachable from the lab gateway
-  (`100.66.6.130`) or by its tailnet hostname — only from `127.0.0.1` / the local LAN.
-- ❌ **Gateway not repointed**: step 8 (pointing `100.66.6.130` at this PC) hasn't run — blocked
-  on the tailnet issue above, and it changes the live lab gateway so needs explicit sign-off
-  anyway.
+- ✅ **Tailnet up** (checked 2026-10-10): `ambermist-local` is online as `100.116.148.127`,
+  tagged, and the gateway resolves it and gets `/health` 200. (It was `offline` on 2026-10-09;
+  it is an ephemeral node, so it can drop again when WSL has been down for a while.)
+- ✅ **Gateway repointed 2026-10-10 — TEMPORARY**: `100.66.6.130` now proxies to
+  `ambermist-local.tail57998f.ts.net:8080`; `/health` through the gateway returns 200.
+  Revert to the H200 with the steps in [lab-gateway.md](lab-gateway.md#temporary-upstream-is-the-local-llm-not-the-h200).
 - ❓ **VS Code**: `chatLanguageModels.json` snippet drafted in local-llm-3060.md, not confirmed
   applied (that file is never read/edited directly — holds other endpoints' keys).
 
